@@ -39,7 +39,87 @@ const CBlockIndex* NaiveLastCommonAncestor(const CBlockIndex* a, const CBlockInd
     return a;
 }
 
+// TODO: Make these available from the prod code
+/** Turn the lowest '1' bit in the binary representation of a number into a '0'. */
+int static inline InvertLowestOne(int n) { return n & (n - 1); }
+
+/** Compute what height to jump back to with the CBlockIndex::pskip pointer. */
+int static inline GetSkipHeight(int height) {
+    if (height < 2)
+        return 0;
+
+    // Determine which height to jump back to. Any number strictly lower than height is acceptable,
+    // but the following expression seems to perform well in simulations (max 110 steps to go back
+    // up to 2**18 blocks).
+    return (height & 1) ? InvertLowestOne(InvertLowestOne(height - 1)) + 1 : InvertLowestOne(height);
+}
+
 } // namespace
+
+BOOST_AUTO_TEST_CASE(get_skip_height_test)
+{
+    BOOST_CHECK(GetSkipHeight(0) == 0);
+    BOOST_CHECK(GetSkipHeight(1) == 0);
+    BOOST_CHECK(GetSkipHeight(2) == 0);
+    BOOST_CHECK(GetSkipHeight(3) == 1);
+    BOOST_CHECK(GetSkipHeight(4) == 0);
+    BOOST_CHECK(GetSkipHeight(5) == 1);
+    BOOST_CHECK(GetSkipHeight(7) == 1);
+    BOOST_CHECK(GetSkipHeight(8) == 0);
+    BOOST_CHECK(GetSkipHeight(15) == 9);
+    BOOST_CHECK(GetSkipHeight(16) == 0);
+    BOOST_CHECK(GetSkipHeight(17) == 1);
+    BOOST_CHECK(GetSkipHeight(256) == 0);
+    BOOST_CHECK(GetSkipHeight(65536) == 0);
+    BOOST_CHECK(GetSkipHeight(0b0001011101101000) == 0b0001011101100000);
+    BOOST_CHECK(GetSkipHeight(0b0001011101101001) == 0b0001011101000001);
+    BOOST_CHECK(GetSkipHeight(0b0110101101011000) == 0b0110101101010000);
+    BOOST_CHECK(GetSkipHeight(0b0110101101011001) == 0b0110101101000001);
+}
+
+BOOST_AUTO_TEST_CASE(skip_height_properties_test)
+{
+    FastRandomContext ctx;
+    std::vector<std::unique_ptr<CBlockIndex>> block_index;
+    const auto n = 30000;
+
+    // Create genesis block.
+    auto genesis = std::make_unique<CBlockIndex>();
+    genesis->nHeight = 0;
+    block_index.push_back(std::move(genesis));
+
+    // Build a chain
+    for(int i = 0; i < n; ++i) {
+        auto new_index = std::make_unique<CBlockIndex>();
+        new_index->pprev = block_index.back().get();
+        new_index->nHeight = new_index->pprev->nHeight + 1;
+        new_index->BuildSkip();
+        block_index.push_back(std::move(new_index));
+    }
+
+    // analyze the diff (in height) of each element and its pskip
+    int count_diff_smaller_16 = 0;
+    int max_diff = 0;
+    int total_diff = 0;
+    for(int i = 1; i < n; ++i) {
+        BOOST_CHECK(block_index[i]->nHeight == i);
+        auto skip_height = block_index[i]->pskip->nHeight;
+        BOOST_CHECK(skip_height <= i && skip_height >= 0);
+        auto diff = i - skip_height;
+        if (diff < 16) {
+            ++count_diff_smaller_16;
+        }
+        max_diff = diff > max_diff ? diff : max_diff;
+        total_diff += diff;
+    }
+
+    // most skip diffs are small (more than 66% are below 16)
+    BOOST_CHECK(count_diff_smaller_16 > n * 2 / 3);
+    // there are some large skip diffs (more than 75% of n)
+    BOOST_CHECK(max_diff > n * 3 / 4);
+    // on avg, skip diff is relatively high
+    BOOST_CHECK(double(total_diff) / double(n) > 50.0);
+}
 
 BOOST_AUTO_TEST_CASE(chain_test)
 {
