@@ -127,7 +127,7 @@ void MinerTestingSetup::TestPackageSelection(const CScript& scriptPubKey, const 
 
     // Unless fee_threshold is 0
     block_template = block_template->waitNext({.timeout = MillisecondsDouble{0}, .fee_threshold = 0});
-    BOOST_REQUIRE(block_template.get() == nullptr);
+    BOOST_REQUIRE(block_template);
 
     // Test the ancestor feerate transaction selection.
     TestMemPoolEntryHelper entry;
