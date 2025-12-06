@@ -67,6 +67,7 @@
 #include <rpc/register.h>
 #include <rpc/server.h>
 #include <rpc/util.h>
+#include <schedtx.h>
 #include <scheduler.h>
 #include <script/sigcache.h>
 #include <sync.h>
@@ -93,6 +94,7 @@
 #include <validationinterface.h>
 #include <walletinitinterface.h>
 
+#include <any>
 #include <algorithm>
 #include <cerrno>
 #include <condition_variable>
@@ -1475,6 +1477,17 @@ bool AppInitMain(NodeContext& node, interfaces::BlockAndHeaderTipInfo* tip_info)
             LogInfo("Listening for IPC requests on address %s", address);
         }
     }
+
+    // SchedTx: create
+    // TODO: store the instance (not just in local var)
+    printf("SchedTx\n");
+    std::any nodeany{&node};
+    auto sched_tx_pool{ScheduledTxPool(nodeany)};
+    // TODO: proper filename, location, from config, etc.
+    auto sched_tx_data_file_name = "schedtx.dat";
+    sched_tx_pool.CreateFromFile(sched_tx_data_file_name);
+    sched_tx_pool.Start();
+    printf("SchedTx started ('%s' fn '%s')\n", sched_tx_pool.ToString().c_str(), sched_tx_data_file_name);
 
     /* Register RPC commands regardless of -server setting so they will be
      * available in the GUI RPC console even if external calls are disabled.
