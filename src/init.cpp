@@ -67,6 +67,7 @@
 #include <rpc/register.h>
 #include <rpc/server.h>
 #include <rpc/util.h>
+#include <schedtx.h>
 #include <scheduler.h>
 #include <script/sigcache.h>
 #include <sync.h>

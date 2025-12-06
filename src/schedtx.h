@@ -1,7 +1,17 @@
-#pragma once
+#ifndef SCHED_TX_H
+#define SCHED_TX_H
 
+//#define __SCHED_TX_STANDALONE_PROTO__
+
+#ifdef __SCHED_TX_STANDALONE_PROTO__
+// Stub for standalone proto sched-tx-proto
 #include "bitcoincore.h"
+#else
+#include <init.h>
+#include <primitives/transaction_identifier.h>
+#endif
 
+#include <any>
 #include <cstdint>
 #include <iostream>
 #include <mutex>
@@ -23,11 +33,10 @@ public:
     std::uint8_t retry_count;
     std::uint32_t last_try_time;
     // The serialized transaction
-    // TODO Store CTransaction?
-    CTransaction tx;
+    std::vector<uint8_t> tx;
 
     // Default constructor
-    ScheduledTx() 
+    ScheduledTx()
         : submitted_time(0)
         , target_time(0)
         , max_retries(1)
@@ -87,7 +96,7 @@ public:
     std::optional<std::tuple<uint32_t, size_t>> GetEarliest() const;
 
     /// Return one one ready for processing, if found. Also removes it.
-    std::optional<ScheduledTx> GetOneProcessable(int32_t current_time);
+    std::optional<ScheduledTx> GetOneProcessable(uint32_t current_time);
 
     // Serialize the transactions to a stream
     uint32_t Serialize(std::ostream& stream) const;
@@ -98,7 +107,7 @@ public:
 
 class ScheduledTxPool {
 private:
-    NodeContext node_context;
+    std::any node_context;
     ScheduledTxCollection pool;
     std::string file_name;
     std::mutex mtx;
@@ -106,7 +115,7 @@ private:
     bool running;
 
 public:
-    ScheduledTxPool(NodeContext& node_context) : node_context(node_context), running(false) {}
+    ScheduledTxPool(std::any& node_context);
 
     ~ScheduledTxPool() {
         Stop();
@@ -120,7 +129,7 @@ public:
 
     /// Schedule a new transaction
     /// Can throw if already at maximum size
-    Txid Add(uint32_t target_time, const ByteArray& tx, std::uint8_t max_retries = 1, std::uint32_t retry_period = 3600);
+    Txid Add(uint32_t target_time, const std::vector<uint8_t>& tx, std::uint8_t max_retries = 1, std::uint32_t retry_period = 3600);
 
     size_t Count() const { return this->pool.Count(); }
 
@@ -146,3 +155,5 @@ protected:
 
     uint32_t SaveIfNeeded();
 };
+
+#endif // SCHED_TX_H
