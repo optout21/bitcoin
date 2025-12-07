@@ -102,8 +102,14 @@ static RPCHelpMan sendrawtransaction()
 
             // SchedTx
             auto& sched_tx = EnsureSchedTx(node);
-            printf("SchedTx: accessed SchedTx, '%s'\n", sched_tx.ToString().c_str());
+            // printf("SchedTx: accessed SchedTx, '%s'\n", sched_tx.ToString().c_str());
+            uint32_t dummy_schedule_time = time(NULL) + 300;
+            // Parse hex tx string to binary
+            std::vector<uint8_t> tx_data = ParseHex(request.params[0].get_str());
+            auto txid = sched_tx.ScheduleTx(dummy_schedule_time, tx_data);
+            printf("Transaction scheduled, txid %s  time %d  tx %s\n", txid.ToString().c_str(), dummy_schedule_time, request.params[0].get_str().c_str());
 
+            // TODO: don't broadcast here
             const TransactionError err = BroadcastTransaction(node,
                                                               tx,
                                                               err_string,
