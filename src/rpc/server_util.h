@@ -18,6 +18,7 @@ class CTxMemPool;
 class ChainstateManager;
 class PeerManager;
 class BanMan;
+class ScheduledTxPool;
 namespace node {
 struct NodeContext;
 } // namespace node
@@ -41,6 +42,7 @@ interfaces::Mining& EnsureMining(const node::NodeContext& node);
 PeerManager& EnsurePeerman(const node::NodeContext& node);
 AddrMan& EnsureAddrman(const node::NodeContext& node);
 AddrMan& EnsureAnyAddrman(const std::any& context);
+ScheduledTxPool& EnsureSchedTx(const node::NodeContext& node);
 
 /** Return an empty block index on top of the tip, with height, time and nBits set */
 void NextEmptyBlockIndex(CBlockIndex& tip, const Consensus::Params& consensusParams, CBlockIndex& next_index);

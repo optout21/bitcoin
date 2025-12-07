@@ -13,6 +13,7 @@
 #include <pow.h>
 #include <rpc/protocol.h>
 #include <rpc/request.h>
+#include <schedtx.h>
 #include <txmempool.h>
 #include <util/any.h>
 #include <validation.h>
@@ -132,6 +133,13 @@ AddrMan& EnsureAddrman(const NodeContext& node)
 AddrMan& EnsureAnyAddrman(const std::any& context)
 {
     return EnsureAddrman(EnsureAnyNodeContext(context));
+}
+
+ScheduledTxPool& EnsureSchedTx(const NodeContext& node) {
+    if (!node.sched_tx) {
+        throw JSONRPCError(RPC_CLIENT_P2P_DISABLED, "Error: ScheduledTxPool functionality missing or disabled");
+    }
+    return *node.sched_tx;
 }
 
 void NextEmptyBlockIndex(CBlockIndex& tip, const Consensus::Params& consensusParams, CBlockIndex& next_index)

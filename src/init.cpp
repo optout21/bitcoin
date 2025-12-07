@@ -1482,12 +1482,13 @@ bool AppInitMain(NodeContext& node, interfaces::BlockAndHeaderTipInfo* tip_info)
     // TODO: store the instance (not just in local var)
     printf("SchedTx\n");
     std::any nodeany{&node};
-    auto sched_tx_pool{ScheduledTxPool(nodeany)};
+    auto sched_tx_pool = std::make_unique<ScheduledTxPool>(nodeany);
+    node.sched_tx = std::move(sched_tx_pool);
     // TODO: proper filename, location, from config, etc.
     auto sched_tx_data_file_name = "schedtx.dat";
-    sched_tx_pool.CreateFromFile(sched_tx_data_file_name);
-    sched_tx_pool.Start();
-    printf("SchedTx started ('%s' fn '%s')\n", sched_tx_pool.ToString().c_str(), sched_tx_data_file_name);
+    node.sched_tx->CreateFromFile(sched_tx_data_file_name);
+    node.sched_tx->Start();
+    printf("SchedTx started ('%s' fn '%s')\n", node.sched_tx->ToString().c_str(), sched_tx_data_file_name);
 
     /* Register RPC commands regardless of -server setting so they will be
      * available in the GUI RPC console even if external calls are disabled.

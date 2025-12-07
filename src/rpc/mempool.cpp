@@ -20,6 +20,7 @@
 #include <rpc/server.h>
 #include <rpc/server_util.h>
 #include <rpc/util.h>
+#include <schedtx.h>
 #include <txmempool.h>
 #include <univalue.h>
 #include <util/fs.h>
@@ -98,6 +99,11 @@ static RPCHelpMan sendrawtransaction()
             std::string err_string;
             AssertLockNotHeld(cs_main);
             NodeContext& node = EnsureAnyNodeContext(request.context);
+
+            // SchedTx
+            auto& sched_tx = EnsureSchedTx(node);
+            printf("SchedTx: accessed SchedTx, '%s'\n", sched_tx.ToString().c_str());
+
             const TransactionError err = BroadcastTransaction(node,
                                                               tx,
                                                               err_string,

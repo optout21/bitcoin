@@ -339,6 +339,7 @@ bool ScheduledTxPool::ProcessTx(const ScheduledTx& tx, uint32_t current_time) {
     printf("Broadcasting tx (size %d '%s'), now %d ... \n", tx.size(), tx.ToString().c_str(), current_time);
     assert(this->node_context.has_value());
     auto& typed_node_context = EnsureAnyNodeContext(this->node_context);
+    // TODO: Change to BroadcastTransaction()
     auto& chainman = EnsureChainman(typed_node_context);
     CTransaction ctx = ParseTransaction(tx.tx);
     auto res = chainman.ProcessTransaction(std::make_shared<const CTransaction>(ctx));
