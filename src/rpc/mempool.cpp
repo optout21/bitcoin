@@ -106,21 +106,26 @@ static RPCHelpMan sendrawtransaction()
             uint32_t dummy_schedule_time = time(NULL) + 300;
             // Parse hex tx string to binary
             std::vector<uint8_t> tx_data = ParseHex(request.params[0].get_str());
-            auto txid = sched_tx.ScheduleTx(dummy_schedule_time, tx_data);
+            auto txid = sched_tx.ScheduleTx(dummy_schedule_time,
+                tx_data,
+                max_raw_tx_fee,
+                node::TxBroadcast::MEMPOOL_AND_BROADCAST_TO_ALL);
             printf("Transaction scheduled, txid %s  time %d  tx %s\n", txid.ToString().c_str(), dummy_schedule_time, request.params[0].get_str().c_str());
 
-            // TODO: don't broadcast here
-            const TransactionError err = BroadcastTransaction(node,
-                                                              tx,
-                                                              err_string,
-                                                              max_raw_tx_fee,
-                                                              node::TxBroadcast::MEMPOOL_AND_BROADCAST_TO_ALL,
-                                                              /*wait_callback=*/true);
-            if (TransactionError::OK != err) {
-                throw JSONRPCTransactionError(err, err_string);
-            }
+            // Don't broadcast here
+            // const TransactionError err = BroadcastTransaction(node,
+            //                                                   tx,
+            //                                                   err_string,
+            //                                                   max_raw_tx_fee,
+            //                                                   node::TxBroadcast::MEMPOOL_AND_BROADCAST_TO_ALL,
+            //                                                   /*wait_callback=*/true);
+            // if (TransactionError::OK != err) {
+            //     throw JSONRPCTransactionError(err, err_string);
+            // }
 
-            return tx->GetHash().GetHex();
+            // return tx->GetHash().GetHex();
+
+            return txid.GetHex();
         },
     };
 }

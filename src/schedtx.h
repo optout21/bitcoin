@@ -8,6 +8,7 @@
 #include "bitcoincore.h"
 #else
 #include <init.h>
+#include <node/types.h>
 #include <primitives/transaction_identifier.h>
 #endif
 
@@ -28,6 +29,8 @@ public:
     // Target time for broadcasting, absolute time or block height
     // Semantics is like in lock_time
     std::uint32_t target_time;
+    std::uint64_t max_fee;
+    node::TxBroadcast broadcast_method;
     std::uint8_t max_retries;
     std::uint32_t retry_period;
     std::uint8_t retry_count;
@@ -35,24 +38,25 @@ public:
     // The serialized transaction
     std::vector<uint8_t> tx;
 
-    // Default constructor
-    ScheduledTx()
-        : submitted_time(0)
-        , target_time(0)
-        , max_retries(1)
-        , retry_period(3600)
-        , retry_count(0)
-        , last_try_time(0)
-        , tx() {}
-
     // Constructor with parameters
-    ScheduledTx(std::uint64_t submitted_time, std::uint64_t target_time, const std::vector<std::uint8_t>& tx, std::uint8_t max_retries = 1, std::uint32_t retry_period = 3600)
+    ScheduledTx(std::uint64_t submitted_time,
+        std::uint64_t target_time,
+        const std::vector<std::uint8_t>& tx,
+        uint64_t max_fee = 1000000,
+        node::TxBroadcast broadcast_method = node::TxBroadcast::MEMPOOL_AND_BROADCAST_TO_ALL,
+        std::uint8_t max_retries = 1,
+        std::uint32_t retry_period = 3600,
+        std::uint8_t retry_count = 0,
+        std::uint32_t last_try_time = 0
+    )
         : submitted_time(submitted_time)
         , target_time(target_time)
+        , max_fee(max_fee)
+        , broadcast_method(broadcast_method)
         , max_retries(max_retries)
         , retry_period(retry_period)
-        , retry_count(0)
-        , last_try_time(0)
+        , retry_count(retry_count)
+        , last_try_time(last_try_time)
         , tx(std::move(tx)) {}
 
     // Return the scheduled target time, or next retry time
@@ -129,7 +133,12 @@ public:
 
     /// Schedule a new transaction
     /// Can throw if already at maximum size
-    Txid ScheduleTx(uint32_t target_time, const std::vector<uint8_t>& tx, std::uint8_t max_retries = 1, std::uint32_t retry_period = 3600);
+    Txid ScheduleTx(uint32_t target_time,
+        const std::vector<uint8_t>& tx,
+        uint64_t max_fee = 1000000,
+        node::TxBroadcast broadcast_method = node::TxBroadcast::MEMPOOL_AND_BROADCAST_TO_ALL,
+        std::uint8_t max_retries = 1,
+        std::uint32_t retry_period = 3600);
 
     size_t Count() const { return this->pool.Count(); }
 
