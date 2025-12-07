@@ -2,6 +2,7 @@
 
 #ifndef __SCHED_TX_STANDALONE_PROTO__
 #include <node/context.h>
+#include <node/transaction.h>
 #include <primitives/transaction.h>
 #include <crypto/hex_base.h>
 #include <core_io.h>
@@ -340,11 +341,13 @@ bool ScheduledTxPool::ProcessTx(const ScheduledTx& tx, uint32_t current_time) {
     printf("Broadcasting tx (size %d '%s'), now %d ... \n", tx.size(), tx.ToString().c_str(), current_time);
     assert(this->node_context.has_value());
     auto& typed_node_context = EnsureAnyNodeContext(this->node_context);
-    // TODO: Change to BroadcastTransaction()
-    auto& chainman = EnsureChainman(typed_node_context);
     CTransaction ctx = ParseTransaction(tx.tx);
-    auto res = chainman.ProcessTransaction(std::make_shared<const CTransaction>(ctx));
-    printf("Broadcast result: %d, now %d\n", int(res.m_result_type), current_time);
+    std::string broadcast_error;
+    CAmount max_fee{1000000}; // TODO from input
+    auto broadcast_method = node::TxBroadcast::MEMPOOL_AND_BROADCAST_TO_ALL; // TODO from input
+    // TODO Check if wait_callback=true needed?
+    auto res = BroadcastTransaction(typed_node_context, std::make_shared<const CTransaction>(ctx), broadcast_error, max_fee, broadcast_method, /*wat_callback=*/true);
+    printf("Broadcast result: %d, now %d, txid %s\n", int(res), current_time, ctx.GetHash().ToString().c_str());
     return true;
 }
 
