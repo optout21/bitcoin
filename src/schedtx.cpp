@@ -148,6 +148,7 @@ uint32_t ScheduledTxCollection::Serialize(std::ostream& stream) const {
     }
     {
         // Add human-readable text for debug
+        // TODO remove
         std::string text = this->ToString();
         stream.write(reinterpret_cast<const char*>(text.c_str()), text.size());
     }
@@ -219,7 +220,7 @@ void ScheduledTxPool::Stop() {
     }
 }
 
-Txid ScheduledTxPool::Add(uint32_t target_time, const std::vector<uint8_t>& tx, std::uint8_t max_retries, std::uint32_t retry_period) {
+Txid ScheduledTxPool::ScheduleTx(uint32_t target_time, const std::vector<uint8_t>& tx, std::uint8_t max_retries, std::uint32_t retry_period) {
     auto now = time(NULL);
     // Parse TX, obtain Txid
     CTransaction ctx = ParseTransaction(tx);

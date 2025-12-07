@@ -129,7 +129,7 @@ public:
 
     /// Schedule a new transaction
     /// Can throw if already at maximum size
-    Txid Add(uint32_t target_time, const std::vector<uint8_t>& tx, std::uint8_t max_retries = 1, std::uint32_t retry_period = 3600);
+    Txid ScheduleTx(uint32_t target_time, const std::vector<uint8_t>& tx, std::uint8_t max_retries = 1, std::uint32_t retry_period = 3600);
 
     size_t Count() const { return this->pool.Count(); }
 
