@@ -20,6 +20,7 @@
 #include <rpc/server.h>
 #include <rpc/server_util.h>
 #include <rpc/util.h>
+#include <schedtx.h>
 #include <txmempool.h>
 #include <univalue.h>
 #include <util/fs.h>
@@ -98,6 +99,9 @@ static RPCHelpMan sendrawtransaction()
             std::string err_string;
             AssertLockNotHeld(cs_main);
             NodeContext& node = EnsureAnyNodeContext(request.context);
+
+            // Parse hex tx string to binary
+            std::vector<uint8_t> tx_data = ParseHex(request.params[0].get_str());
             const TransactionError err = BroadcastTransaction(node,
                                                               tx,
                                                               err_string,
@@ -109,6 +113,83 @@ static RPCHelpMan sendrawtransaction()
             }
 
             return tx->GetHash().GetHex();
+        },
+    };
+}
+
+// TODO: Minimize duplication with sendrawtransaction
+static RPCHelpMan schedulerawtransaction()
+{
+    return RPCHelpMan{
+        "schedulerawtransaction",
+        "Schedule broadcast of a raw transaction (serialized, hex-encoded) to local node and network.\n"
+        "\nThe transaction will be sent unconditionally to all peers, so using schedulerawtransaction\n"
+        "for manual rebroadcast may degrade privacy by leaking the transaction's origin, as\n"
+        "nodes will normally not rebroadcast non-wallet transactions already in their mempool.\n"
+        "\nA specific exception, RPC_TRANSACTION_ALREADY_IN_UTXO_SET, may throw if the transaction cannot be added to the mempool.\n"
+        "\nRelated RPCs: createrawtransaction, signrawtransactionwithkey\n",
+        {
+            {"hexstring", RPCArg::Type::STR_HEX, RPCArg::Optional::NO, "The hex string of the raw transaction"},
+            {"maxfeerate", RPCArg::Type::AMOUNT, RPCArg::Default{FormatMoney(DEFAULT_MAX_RAW_TX_FEE_RATE.GetFeePerK())},
+             "Reject transactions whose fee rate is higher than the specified value, expressed in " + CURRENCY_UNIT +
+                 "/kvB.\nFee rates larger than 1BTC/kvB are rejected.\nSet to 0 to accept any fee rate."},
+            {"maxburnamount", RPCArg::Type::AMOUNT, RPCArg::Default{FormatMoney(DEFAULT_MAX_BURN_AMOUNT)},
+             "Reject transactions with provably unspendable outputs (e.g. 'datacarrier' outputs that use the OP_RETURN opcode) greater than the specified value, expressed in " + CURRENCY_UNIT + ".\n"
+             "If burning funds through unspendable outputs is desired, increase this value.\n"
+             "This check is based on heuristics and does not guarantee spendability of outputs.\n"},
+        },
+        RPCResult{
+            RPCResult::Type::STR_HEX, "", "The transaction hash in hex"
+        },
+        RPCExamples{
+            "\nCreate a transaction\n"
+            + HelpExampleCli("createrawtransaction", "\"[{\\\"txid\\\" : \\\"mytxid\\\",\\\"vout\\\":0}]\" \"{\\\"myaddress\\\":0.01}\"") +
+            "Sign the transaction, and get back the hex\n"
+            + HelpExampleCli("signrawtransactionwithwallet", "\"myhex\"") +
+            "\nSend the transaction (signed hex)\n"
+            + HelpExampleCli("schedulerawtransaction", "\"signedhex\"") +
+            "\nAs a JSON-RPC call\n"
+            + HelpExampleRpc("schedulerawtransaction", "\"signedhex\"")
+                },
+        [&](const RPCHelpMan& self, const JSONRPCRequest& request) -> UniValue
+        {
+            const CAmount max_burn_amount = request.params[2].isNull() ? 0 : AmountFromValue(request.params[2]);
+
+            CMutableTransaction mtx;
+            if (!DecodeHexTx(mtx, request.params[0].get_str())) {
+                throw JSONRPCError(RPC_DESERIALIZATION_ERROR, "TX decode failed. Make sure the tx has at least one input.");
+            }
+
+            for (const auto& out : mtx.vout) {
+                if((out.scriptPubKey.IsUnspendable() || !out.scriptPubKey.HasValidOps()) && out.nValue > max_burn_amount) {
+                    throw JSONRPCTransactionError(TransactionError::MAX_BURN_EXCEEDED);
+                }
+            }
+
+            CTransactionRef tx(MakeTransactionRef(std::move(mtx)));
+
+            const CFeeRate max_raw_tx_fee_rate{ParseFeeRate(self.Arg<UniValue>("maxfeerate"))};
+
+            int64_t virtual_size = GetVirtualTransactionSize(*tx);
+            CAmount max_raw_tx_fee = max_raw_tx_fee_rate.GetFee(virtual_size);
+
+            std::string err_string;
+            AssertLockNotHeld(cs_main);
+            NodeContext& node = EnsureAnyNodeContext(request.context);
+
+            // SchedTx
+            auto& sched_tx = EnsureSchedTx(node);
+            // printf("SchedTx: accessed SchedTx, '%s'\n", sched_tx.ToString().c_str());
+            uint32_t dummy_schedule_time = time(NULL) + 300;
+            // Parse hex tx string to binary
+            std::vector<uint8_t> tx_data = ParseHex(request.params[0].get_str());
+            auto txid = sched_tx.ScheduleTx(dummy_schedule_time,
+                tx_data,
+                max_raw_tx_fee,
+                node::TxBroadcast::MEMPOOL_AND_BROADCAST_TO_ALL);
+            printf("Transaction scheduled, txid %s  time %d  tx %s\n", txid.ToString().c_str(), dummy_schedule_time, request.params[0].get_str().c_str());
+
+            return txid.GetHex();
         },
     };
 }
@@ -1305,6 +1386,7 @@ void RegisterMempoolRPCCommands(CRPCTable& t)
 {
     static const CRPCCommand commands[]{
         {"rawtransactions", &sendrawtransaction},
+        {"rawtransactions", &schedulerawtransaction},
         {"rawtransactions", &testmempoolaccept},
         {"blockchain", &getmempoolancestors},
         {"blockchain", &getmempooldescendants},

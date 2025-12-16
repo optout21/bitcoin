@@ -67,6 +67,7 @@
 #include <rpc/register.h>
 #include <rpc/server.h>
 #include <rpc/util.h>
+#include <schedtx.h>
 #include <scheduler.h>
 #include <script/sigcache.h>
 #include <sync.h>
@@ -93,6 +94,7 @@
 #include <validationinterface.h>
 #include <walletinitinterface.h>
 
+#include <any>
 #include <algorithm>
 #include <cerrno>
 #include <condition_variable>
@@ -1475,6 +1477,14 @@ bool AppInitMain(NodeContext& node, interfaces::BlockAndHeaderTipInfo* tip_info)
             LogInfo("Listening for IPC requests on address %s", address);
         }
     }
+
+    // SchedTx: create instance
+    std::any nodeany{&node};
+    auto sched_tx_pool = std::make_unique<ScheduledTxPool>(nodeany);
+    node.sched_tx = std::move(sched_tx_pool);
+    // TODO: read from file
+    node.sched_tx->Start();
+    printf("SchedTx started ('%s')\n", node.sched_tx->ToString().c_str());
 
     /* Register RPC commands regardless of -server setting so they will be
      * available in the GUI RPC console even if external calls are disabled.
