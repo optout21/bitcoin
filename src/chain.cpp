@@ -72,6 +72,10 @@ const CBlockIndex* CChain::NextSyncBlock(const CBlockIndex* pindex_prev) const
         return this->Genesis();
     }
 
+    if (pindex_prev == this->Tip()) {
+        // The tip doesn't have next, no need to continue, early exit
+        return nullptr;
+    }
     const CBlockIndex* pindex = this->Next(pindex_prev);
     if (pindex) {
         return pindex;
