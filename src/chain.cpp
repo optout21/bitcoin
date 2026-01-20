@@ -66,6 +66,22 @@ CBlockIndex* CChain::FindEarliestAtLeast(int64_t nTime, int height) const
     return (lower == vChain.end() ? nullptr : *lower);
 }
 
+const CBlockIndex* CChain::NextSyncBlock(const CBlockIndex* pindex_prev) const
+{
+    if (!pindex_prev) {
+        return this->Genesis();
+    }
+
+    const CBlockIndex* pindex = this->Next(pindex_prev);
+    if (pindex) {
+        return pindex;
+    }
+
+    // Since block is not in the chain, return the next block in the chain AFTER the last common ancestor.
+    // Caller will be responsible for rewinding back to the common ancestor.
+    return this->Next(this->FindFork(pindex_prev));
+}
+
 /** Turn the lowest '1' bit in the binary representation of a number into a '0'. */
 int static inline InvertLowestOne(int n) { return n & (n - 1); }
 

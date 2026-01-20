@@ -436,6 +436,9 @@ public:
 
     /** Find the earliest block with timestamp equal or greater than the given time and height equal or greater than the given height. */
     CBlockIndex* FindEarliestAtLeast(int64_t nTime, int height) const;
+
+    /** TODO comment Moved from base.cpp */
+    const CBlockIndex* NextSyncBlock(const CBlockIndex* pindex_prev) const;
 };
 
 /** Get a locator for a block index entry. */
