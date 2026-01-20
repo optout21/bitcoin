@@ -46,49 +46,60 @@ BOOST_AUTO_TEST_CASE(cchain_basic_tests)
     auto genesis = CBlockIndex{};
     genesis.nHeight = 0;
     auto bi1 = CBlockIndex{};
+    bi1.pprev = &genesis;
     bi1.nHeight = 1;
 
     // Empty chain
-    auto chain_0 = CChain{};
+    {
+        auto chain_0 = CChain{};
 
-    BOOST_CHECK_EQUAL(chain_0.Height(), -1);
-    BOOST_CHECK_EQUAL(chain_0.Genesis(), nullptr);
-    BOOST_CHECK_EQUAL(chain_0.Tip(), nullptr);
-    BOOST_CHECK_EQUAL(chain_0[0], nullptr);
-    BOOST_CHECK_EQUAL(chain_0.Contains(&genesis), false);
-    BOOST_CHECK_EQUAL(chain_0.Next(&genesis), nullptr);
+        BOOST_CHECK_EQUAL(chain_0.Height(), -1);
+        BOOST_CHECK_EQUAL(chain_0.Genesis(), nullptr);
+        BOOST_CHECK_EQUAL(chain_0.Tip(), nullptr);
+        BOOST_CHECK_EQUAL(chain_0[0], nullptr);
+        BOOST_CHECK_EQUAL(chain_0.Contains(&genesis), false);
+        BOOST_CHECK_EQUAL(chain_0.Next(&genesis), nullptr);
+    }
 
     // Chain with 1 block
-    auto chain_1 = CChain{};
-    chain_1.SetTip(genesis);
+    {
+        auto chain_1 = CChain{};
+        chain_1.SetTip(genesis);
 
-    BOOST_CHECK_EQUAL(chain_1.Height(), 0);
-    BOOST_CHECK_EQUAL(chain_1.Genesis(), &genesis);
-    BOOST_CHECK_EQUAL(chain_1.Tip(), &genesis);
-    BOOST_CHECK_EQUAL(chain_1[-1], nullptr);
-    BOOST_CHECK_EQUAL(chain_1[0], &genesis);
-    BOOST_CHECK_EQUAL(chain_1[1], nullptr);
-    BOOST_CHECK_EQUAL(chain_1.Contains(&genesis), true);
-    BOOST_CHECK_EQUAL(chain_1.Contains(&bi1), false);
-    BOOST_CHECK_EQUAL(chain_1.Next(&genesis), nullptr);
-    BOOST_CHECK_EQUAL(chain_1.Next(&bi1), nullptr);
+        BOOST_CHECK_EQUAL(chain_1.Height(), 0);
+        BOOST_CHECK_EQUAL(chain_1.Genesis(), &genesis);
+        BOOST_CHECK_EQUAL(chain_1.Tip(), &genesis);
+        BOOST_CHECK_EQUAL(chain_1[-1], nullptr);
+        BOOST_CHECK_EQUAL(chain_1[0], &genesis);
+        BOOST_CHECK_EQUAL(chain_1[1], nullptr);
+        BOOST_CHECK_EQUAL(chain_1.Contains(&genesis), true);
+        BOOST_CHECK_EQUAL(chain_1.Contains(&bi1), false);
+        BOOST_CHECK_EQUAL(chain_1.Next(&genesis), nullptr);
+        BOOST_CHECK_EQUAL(chain_1.Next(&bi1), nullptr);
+        BOOST_CHECK_EQUAL(chain_1.NextSyncBlock(&genesis), nullptr);
+        BOOST_CHECK_EQUAL(chain_1.NextSyncBlock(&bi1), nullptr);
+    }
 
     // Chain with 1 blocks
-    auto chain_2 = CChain{};
-    chain_2.SetTip(genesis);
-    chain_2.SetTip(bi1);
+    {
+        auto chain_2 = CChain{};
+        chain_2.SetTip(genesis);
+        chain_2.SetTip(bi1);
 
-    BOOST_CHECK_EQUAL(chain_2.Height(), 1);
-    BOOST_CHECK_EQUAL(chain_2.Genesis(), &genesis);
-    BOOST_CHECK_EQUAL(chain_2.Tip(), &bi1);
-    BOOST_CHECK_EQUAL(chain_1[-1], nullptr);
-    BOOST_CHECK_EQUAL(chain_2[0], &genesis);
-    BOOST_CHECK_EQUAL(chain_2[1], &bi1);
-    BOOST_CHECK_EQUAL(chain_1[2], nullptr);
-    BOOST_CHECK_EQUAL(chain_2.Contains(&genesis), true);
-    BOOST_CHECK_EQUAL(chain_2.Contains(&bi1), true);
-    BOOST_CHECK_EQUAL(chain_2.Next(&genesis), &bi1);
-    BOOST_CHECK_EQUAL(chain_2.Next(&bi1), nullptr);
+        BOOST_CHECK_EQUAL(chain_2.Height(), 1);
+        BOOST_CHECK_EQUAL(chain_2.Genesis(), &genesis);
+        BOOST_CHECK_EQUAL(chain_2.Tip(), &bi1);
+        BOOST_CHECK_EQUAL(chain_2[-1], nullptr);
+        BOOST_CHECK_EQUAL(chain_2[0], &genesis);
+        BOOST_CHECK_EQUAL(chain_2[1], &bi1);
+        BOOST_CHECK_EQUAL(chain_2[2], nullptr);
+        BOOST_CHECK_EQUAL(chain_2.Contains(&genesis), true);
+        BOOST_CHECK_EQUAL(chain_2.Contains(&bi1), true);
+        BOOST_CHECK_EQUAL(chain_2.Next(&genesis), &bi1);
+        BOOST_CHECK_EQUAL(chain_2.Next(&bi1), nullptr);
+        BOOST_CHECK_EQUAL(chain_2.NextSyncBlock(&genesis), &bi1);
+        BOOST_CHECK_EQUAL(chain_2.NextSyncBlock(&bi1), nullptr);
+    }
 }
 
 BOOST_AUTO_TEST_CASE(cchain_findfork_tests)
@@ -143,21 +154,35 @@ BOOST_AUTO_TEST_CASE(cchain_findfork_tests)
         }
         BOOST_CHECK_EQUAL(cl.Height(), 10 + 10 - 1);
 
+        // FindFork() tests
         // Test the blocks in the common part -> result should be the same
         for(auto& b : b_common) {
-            auto fork{cl.FindFork(b.get())};
-            BOOST_CHECK_EQUAL(fork, b.get());
+            BOOST_CHECK_EQUAL(cl.FindFork(b.get()), b.get());
         }
         // Test the blocks on the longer fork -> result should be the same
         for(auto& b : b_longer) {
-            auto fork{cl.FindFork(b.get())};
-            BOOST_CHECK_EQUAL(fork, b.get());
+            BOOST_CHECK_EQUAL(cl.FindFork(b.get()), b.get());
         }
         // Test the blocks on the other shorter fork -> result should be the fork point
         for(auto& b : b_shorter) {
-            auto fork{cl.FindFork(b.get())};
-            BOOST_CHECK_EQUAL(fork, b_common.back().get());
+            BOOST_CHECK_EQUAL(cl.FindFork(b.get()), b_common.back().get());
         }
+
+        // NextSyncBlock() tests
+        for(int i{0}; i < int(b_common.size() - 1); ++i) {
+            BOOST_CHECK_EQUAL(cl.NextSyncBlock(b_common[i].get()), b_common[i + 1].get());
+        }
+        BOOST_CHECK_EQUAL(cl.NextSyncBlock(b_common.back().get()), b_longer[0].get());
+        // Test the blocks on the longer fork
+        for(int i{0}; i < int(b_longer.size() - 1); ++i) {
+            BOOST_CHECK_EQUAL(cl.NextSyncBlock(b_longer[i].get()), b_longer[i + 1].get());
+        }
+        BOOST_CHECK_EQUAL(cl.NextSyncBlock(b_longer.back().get()), nullptr);
+        // Test the blocks on the other shorter fork
+        for(int i{0}; i < int(b_shorter.size() - 1); ++i) {
+            BOOST_CHECK_EQUAL(cl.NextSyncBlock(b_shorter[i].get()), b_longer[0].get());
+        }
+        BOOST_CHECK_EQUAL(cl.NextSyncBlock(b_shorter.back().get()), b_longer[0].get());
     }
     {
         // Create a chain with the shorter fork
@@ -173,19 +198,32 @@ BOOST_AUTO_TEST_CASE(cchain_findfork_tests)
 
         // Test the blocks in the common part -> result should be the same
         for(auto& b : b_common) {
-            auto fork{cs.FindFork(b.get())};
-            BOOST_CHECK_EQUAL(fork, b.get());
+            BOOST_CHECK_EQUAL(cs.FindFork(b.get()), b.get());
         }
         // Test the blocks on the shorter fork -> result should be the same
         for(auto& b : b_shorter) {
-            auto fork{cs.FindFork(b.get())};
-            BOOST_CHECK_EQUAL(fork, b.get());
+            BOOST_CHECK_EQUAL(cs.FindFork(b.get()), b.get());
         }
         // Test the blocks on the other longer fork -> result should be the fork point
         for(auto& b : b_longer) {
-            auto fork{cs.FindFork(b.get())};
-            BOOST_CHECK_EQUAL(fork, b_common.back().get());
+            BOOST_CHECK_EQUAL(cs.FindFork(b.get()), b_common.back().get());
         }
+
+        // NextSyncBlock() tests
+        for(int i{0}; i < int(b_common.size() - 1); ++i) {
+            BOOST_CHECK_EQUAL(cs.NextSyncBlock(b_common[i].get()), b_common[i + 1].get());
+        }
+        BOOST_CHECK_EQUAL(cs.NextSyncBlock(b_common.back().get()), b_shorter[0].get());
+        // Test the blocks on the shorter fork
+        for(int i{0}; i < int(b_shorter.size() - 1); ++i) {
+            BOOST_CHECK_EQUAL(cs.NextSyncBlock(b_shorter[i].get()), b_shorter[i + 1].get());
+        }
+        BOOST_CHECK_EQUAL(cs.NextSyncBlock(b_shorter.back().get()), nullptr);
+        // Test the blocks on the other longer fork
+        for(int i{0}; i < int(b_longer.size() - 1); ++i) {
+            BOOST_CHECK_EQUAL(cs.NextSyncBlock(b_longer[i].get()), b_shorter[0].get());
+        }
+        BOOST_CHECK_EQUAL(cs.NextSyncBlock(b_longer.back().get()), b_shorter[0].get());
     }
 }
 
