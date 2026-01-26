@@ -1622,7 +1622,7 @@ static RPCMethod getchaintips()
     std::set<const CBlockIndex*> setPrevs;
 
     for (const auto& [_, block_index] : chainman.BlockIndex()) {
-        if (!active_chain.Contains(&block_index)) {
+        if (!active_chain.Contains(block_index)) {
             setOrphans.insert(&block_index);
             setPrevs.insert(block_index.pprev);
         }
@@ -1648,7 +1648,7 @@ static RPCMethod getchaintips()
         obj.pushKV("branchlen", branchLen);
 
         std::string status;
-        if (active_chain.Contains(block)) {
+        if (active_chain.Contains(*block)) {
             // This block is part of the currently active chain.
             status = "active";
         } else if (block->nStatus & BLOCK_FAILED_VALID) {
@@ -1857,7 +1857,7 @@ static RPCMethod getchaintxstats()
         if (!pindex) {
             throw JSONRPCError(RPC_INVALID_ADDRESS_OR_KEY, "Block not found");
         }
-        if (!chainman.ActiveChain().Contains(pindex)) {
+        if (!chainman.ActiveChain().Contains(*pindex)) {
             throw JSONRPCError(RPC_INVALID_PARAMETER, "Block is not in main chain");
         }
     }
@@ -2795,7 +2795,7 @@ static RPCMethod getdescriptoractivity()
             if (!pindex) {
                 throw JSONRPCError(RPC_INVALID_ADDRESS_OR_KEY, "Block not found");
             }
-            if (!chainman.ActiveChain().Contains(pindex)) {
+            if (!chainman.ActiveChain().Contains(*pindex)) {
                 throw JSONRPCError(RPC_INVALID_PARAMETER, "Block is not in main chain");
             }
             blockindexes_sorted.insert(pindex);
