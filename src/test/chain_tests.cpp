@@ -48,7 +48,8 @@ BOOST_AUTO_TEST_CASE(cchain_basic_tests)
     auto bi1 = CBlockIndex{};
     bi1.nHeight = 1;
 
-    { // Empty chain
+    // Empty chain
+    {
         auto chain_0 = CChain{};
 
         BOOST_CHECK_EQUAL(chain_0.Height(), -1);
@@ -59,7 +60,8 @@ BOOST_AUTO_TEST_CASE(cchain_basic_tests)
         BOOST_CHECK_EQUAL(chain_0.Next(&genesis), nullptr);
     }
 
-    { // Chain with 1 block
+    // Chain with 1 block
+    {
         auto chain_1 = CChain{};
         chain_1.SetTip(genesis);
 
@@ -75,7 +77,8 @@ BOOST_AUTO_TEST_CASE(cchain_basic_tests)
         BOOST_CHECK_EQUAL(chain_1.Next(&bi1), nullptr);
     }
 
-    { // Chain with 2 blocks
+    // Chain with 2 blocks
+    {
         auto chain_2 = CChain{};
         chain_2.SetTip(genesis);
         chain_2.SetTip(bi1);
@@ -87,10 +90,11 @@ BOOST_AUTO_TEST_CASE(cchain_basic_tests)
         BOOST_CHECK_EQUAL(chain_2[0], &genesis);
         BOOST_CHECK_EQUAL(chain_2[1], &bi1);
         BOOST_CHECK_EQUAL(chain_2[2], nullptr);
-        BOOST_CHECK_EQUAL(chain_2.Contains(&genesis), true);
-        BOOST_CHECK_EQUAL(chain_2.Contains(&bi1), true);
+        BOOST_CHECK_EQUAL(chain_2.Contains(genesis), true);
+        BOOST_CHECK_EQUAL(chain_2.Contains(bi1), true);
         BOOST_CHECK_EQUAL(chain_2.Next(&genesis), &bi1);
         BOOST_CHECK_EQUAL(chain_2.Next(&bi1), nullptr);
+        BOOST_CHECK_EQUAL(chain_2.Next(nullptr), nullptr);
     }
 }
 
