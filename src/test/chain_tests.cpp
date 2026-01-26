@@ -57,8 +57,8 @@ BOOST_AUTO_TEST_CASE(cchain_basic_tests)
         BOOST_CHECK_EQUAL(chain_0.Genesis(), nullptr);
         BOOST_CHECK_EQUAL(chain_0.Tip(), nullptr);
         BOOST_CHECK_EQUAL(chain_0[0], nullptr);
-        BOOST_CHECK_EQUAL(chain_0.Contains(&genesis), false);
-        BOOST_CHECK_EQUAL(chain_0.Contains(nullptr), false);
+        BOOST_CHECK_EQUAL(chain_0.Contains(genesis), false);
+        //BOOST_CHECK_EQUAL(chain_0.Contains(nullptr), false);
         BOOST_CHECK_EQUAL(chain_0.Next(&genesis), nullptr);
         BOOST_CHECK_EQUAL(chain_0.Next(nullptr), nullptr);
         BOOST_CHECK_EQUAL(chain_0.NextSyncBlock(&genesis), nullptr);
@@ -76,9 +76,9 @@ BOOST_AUTO_TEST_CASE(cchain_basic_tests)
         BOOST_CHECK_EQUAL(chain_1[-1], nullptr);
         BOOST_CHECK_EQUAL(chain_1[0], &genesis);
         BOOST_CHECK_EQUAL(chain_1[1], nullptr);
-        BOOST_CHECK_EQUAL(chain_1.Contains(&genesis), true);
-        BOOST_CHECK_EQUAL(chain_1.Contains(&bi1), false);
-        BOOST_CHECK_EQUAL(chain_1.Contains(nullptr), false);
+        BOOST_CHECK_EQUAL(chain_1.Contains(genesis), true);
+        BOOST_CHECK_EQUAL(chain_1.Contains(bi1), false);
+        //BOOST_CHECK_EQUAL(chain_1.Contains(nullptr), false);
         BOOST_CHECK_EQUAL(chain_1.Next(&genesis), nullptr);
         BOOST_CHECK_EQUAL(chain_1.Next(&bi1), nullptr);
         BOOST_CHECK_EQUAL(chain_1.Next(nullptr), nullptr);
@@ -100,9 +100,9 @@ BOOST_AUTO_TEST_CASE(cchain_basic_tests)
         BOOST_CHECK_EQUAL(chain_2[0], &genesis);
         BOOST_CHECK_EQUAL(chain_2[1], &bi1);
         BOOST_CHECK_EQUAL(chain_2[2], nullptr);
-        BOOST_CHECK_EQUAL(chain_2.Contains(&genesis), true);
-        BOOST_CHECK_EQUAL(chain_2.Contains(&bi1), true);
-        BOOST_CHECK_EQUAL(chain_2.Contains(nullptr), false);
+        BOOST_CHECK_EQUAL(chain_2.Contains(genesis), true);
+        BOOST_CHECK_EQUAL(chain_2.Contains(bi1), true);
+        //BOOST_CHECK_EQUAL(chain_2.Contains(nullptr), false);
         BOOST_CHECK_EQUAL(chain_2.Next(&genesis), &bi1);
         BOOST_CHECK_EQUAL(chain_2.Next(&bi1), nullptr);
         BOOST_CHECK_EQUAL(chain_2.Next(nullptr), nullptr);
