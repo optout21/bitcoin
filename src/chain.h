@@ -19,6 +19,7 @@
 #include <algorithm>
 #include <cassert>
 #include <cstdint>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -414,13 +415,36 @@ public:
     }
 
     /** Find the successor of a block in this chain, or nullptr if the given index is not found or is the tip. */
-    CBlockIndex* Next(const CBlockIndex* pindex) const
+    CBlockIndex* Next2(const CBlockIndex* pindex) const
     {
         if (pindex && Contains(*pindex))
             return (*this)[pindex->nHeight + 1];
         else
             return nullptr;
     }
+
+    /** Find the successor of a block in this chain, or nullopt if the given index is not found or is the tip. */
+    std::optional<std::reference_wrapper<CBlockIndex>> Next(const CBlockIndex& pindex) const
+    {
+        if (Contains(pindex))
+            if (auto next = (*this)[pindex.nHeight + 1]; next)
+                return std::ref(*next);
+        return std::nullopt;
+    }
+
+    /** Find the successor of a block in this chain, or nullopt if the given index is not found or is the tip. */
+    /*
+    bool Next5(CBlockIndex&& pindex) const
+    {
+        if (Contains(pindex))
+            if (auto next = (*this)[pindex.nHeight + 1]; next) {
+                pindex = pindex; // TODO
+                pindex = *next;
+                return true;
+            }
+        return false;
+    }
+    */
 
     /** Return the maximal height in the chain. Is equal to chain.Tip() ? chain.Tip()->nHeight : -1. */
     int Height() const

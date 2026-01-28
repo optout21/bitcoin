@@ -4270,33 +4270,34 @@ void PeerManagerImpl::ProcessMessage(CNode& pfrom, const std::string& msg_type, 
         LOCK(cs_main);
 
         // Find the last block the caller has in the main chain
-        const CBlockIndex* pindex = m_chainman.ActiveChainstate().FindForkInGlobalIndex(locator);
+        auto pindex = std::optional<std::reference_wrapper<const CBlockIndex>>(std::cref(*m_chainman.ActiveChainstate().FindForkInGlobalIndex(locator)));
 
         // Send the rest of the chain
-        if (pindex)
-            pindex = m_chainman.ActiveChain().Next(pindex);
+        if (pindex.has_value()) {
+            pindex = m_chainman.ActiveChain().Next(*pindex);
+        }
         int nLimit = 500;
-        LogDebug(BCLog::NET, "getblocks %d to %s limit %d from peer=%d\n", (pindex ? pindex->nHeight : -1), hashStop.IsNull() ? "end" : hashStop.ToString(), nLimit, pfrom.GetId());
-        for (; pindex; pindex = m_chainman.ActiveChain().Next(pindex))
+        LogDebug(BCLog::NET, "getblocks %d to %s limit %d from peer=%d\n", (pindex.has_value() ? pindex->get().nHeight : -1), hashStop.IsNull() ? "end" : hashStop.ToString(), nLimit, pfrom.GetId());
+        for (; pindex.has_value(); pindex = m_chainman.ActiveChain().Next(*pindex))
         {
-            if (pindex->GetBlockHash() == hashStop)
+            if (pindex->get().GetBlockHash() == hashStop)
             {
-                LogDebug(BCLog::NET, "  getblocks stopping at %d %s\n", pindex->nHeight, pindex->GetBlockHash().ToString());
+                LogDebug(BCLog::NET, "  getblocks stopping at %d %s\n", pindex->get().nHeight, pindex->get().GetBlockHash().ToString());
                 break;
             }
             // If pruning, don't inv blocks unless we have on disk and are likely to still have
             // for some reasonable time window (1 hour) that block relay might require.
             const int nPrunedBlocksLikelyToHave = MIN_BLOCKS_TO_KEEP - 3600 / m_chainparams.GetConsensus().nPowTargetSpacing;
-            if (m_chainman.m_blockman.IsPruneMode() && (!(pindex->nStatus & BLOCK_HAVE_DATA) || pindex->nHeight <= m_chainman.ActiveChain().Tip()->nHeight - nPrunedBlocksLikelyToHave)) {
-                LogDebug(BCLog::NET, " getblocks stopping, pruned or too old block at %d %s\n", pindex->nHeight, pindex->GetBlockHash().ToString());
+            if (m_chainman.m_blockman.IsPruneMode() && (!(pindex->get().nStatus & BLOCK_HAVE_DATA) || pindex->get().nHeight <= m_chainman.ActiveChain().Tip()->nHeight - nPrunedBlocksLikelyToHave)) {
+                LogDebug(BCLog::NET, " getblocks stopping, pruned or too old block at %d %s\n", pindex->get().nHeight, pindex->get().GetBlockHash().ToString());
                 break;
             }
-            WITH_LOCK(peer->m_block_inv_mutex, peer->m_blocks_for_inv_relay.push_back(pindex->GetBlockHash()));
+            WITH_LOCK(peer->m_block_inv_mutex, peer->m_blocks_for_inv_relay.push_back(pindex->get().GetBlockHash()));
             if (--nLimit <= 0) {
                 // When this block is requested, we'll send an inv that'll
                 // trigger the peer to getblocks the next batch of inventory.
-                LogDebug(BCLog::NET, "  getblocks stopping at limit %d %s\n", pindex->nHeight, pindex->GetBlockHash().ToString());
-                WITH_LOCK(peer->m_block_inv_mutex, {peer->m_continuation_block = pindex->GetBlockHash();});
+                LogDebug(BCLog::NET, "  getblocks stopping at limit %d %s\n", pindex->get().nHeight, pindex->get().GetBlockHash().ToString());
+                WITH_LOCK(peer->m_block_inv_mutex, {peer->m_continuation_block = pindex->get().GetBlockHash();});
                 break;
             }
         }
@@ -4395,16 +4396,16 @@ void PeerManagerImpl::ProcessMessage(CNode& pfrom, const std::string& msg_type, 
         }
 
         CNodeState *nodestate = State(pfrom.GetId());
-        const CBlockIndex* pindex = nullptr;
+        std::optional<std::reference_wrapper<const CBlockIndex>> pindex = std::nullopt;
         if (locator.IsNull())
         {
             // If locator is null, return the hashStop block
-            pindex = m_chainman.m_blockman.LookupBlockIndex(hashStop);
-            if (!pindex) {
+            pindex = std::optional<std::reference_wrapper<const CBlockIndex>>(std::cref(*m_chainman.m_blockman.LookupBlockIndex(hashStop)));
+            if (!pindex.has_value()) {
                 return;
             }
 
-            if (!BlockRequestAllowed(pindex)) {
+            if (!BlockRequestAllowed(&pindex->get())) {
                 LogDebug(BCLog::NET, "%s: ignoring request from peer=%i for old block header that isn't in the main chain\n", __func__, pfrom.GetId());
                 return;
             }
@@ -4412,22 +4413,22 @@ void PeerManagerImpl::ProcessMessage(CNode& pfrom, const std::string& msg_type, 
         else
         {
             // Find the last block the caller has in the main chain
-            pindex = m_chainman.ActiveChainstate().FindForkInGlobalIndex(locator);
-            if (pindex)
-                pindex = m_chainman.ActiveChain().Next(pindex);
+            pindex = std::optional<std::reference_wrapper<const CBlockIndex>>(std::cref(*m_chainman.ActiveChainstate().FindForkInGlobalIndex(locator)));
+            if (pindex.has_value())
+                pindex = m_chainman.ActiveChain().Next(pindex->get());
         }
 
         // we must use CBlocks, as CBlockHeaders won't include the 0x00 nTx count at the end
         std::vector<CBlock> vHeaders;
         int nLimit = m_opts.max_headers_result;
-        LogDebug(BCLog::NET, "getheaders %d to %s from peer=%d\n", (pindex ? pindex->nHeight : -1), hashStop.IsNull() ? "end" : hashStop.ToString(), pfrom.GetId());
-        for (; pindex; pindex = m_chainman.ActiveChain().Next(pindex))
+        LogDebug(BCLog::NET, "getheaders %d to %s from peer=%d\n", (pindex.has_value() ? pindex->get().nHeight : -1), hashStop.IsNull() ? "end" : hashStop.ToString(), pfrom.GetId());
+        for (; pindex.has_value(); pindex = m_chainman.ActiveChain().Next(pindex->get()))
         {
-            vHeaders.emplace_back(pindex->GetBlockHeader());
-            if (--nLimit <= 0 || pindex->GetBlockHash() == hashStop)
+            vHeaders.emplace_back(pindex->get().GetBlockHeader());
+            if (--nLimit <= 0 || pindex->get().GetBlockHash() == hashStop)
                 break;
         }
-        // pindex can be nullptr either if we sent m_chainman.ActiveChain().Tip() OR
+        // pindex can be nullopt either if we sent m_chainman.ActiveChain().Tip() OR
         // if our peer has m_chainman.ActiveChain().Tip() (and thus we are sending an empty
         // headers message). In both cases it's safe to update
         // pindexBestHeaderSent to be our tip.
@@ -4439,7 +4440,7 @@ void PeerManagerImpl::ProcessMessage(CNode& pfrom, const std::string& msg_type, 
         // without the new block. By resetting the BestHeaderSent, we ensure we
         // will re-announce the new block via headers (or compact blocks again)
         // in the SendMessages logic.
-        nodestate->pindexBestHeaderSent = pindex ? pindex : m_chainman.ActiveChain().Tip();
+        nodestate->pindexBestHeaderSent = pindex.has_value() ? &pindex->get() : m_chainman.ActiveChain().Tip();
         MakeAndPushMessage(pfrom, NetMsgType::HEADERS, TX_WITH_WITNESS(vHeaders));
         return;
     }
