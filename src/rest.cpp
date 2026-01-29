@@ -223,13 +223,13 @@ static bool rest_headers(const std::any& context,
         LOCK(cs_main);
         CChain& active_chain = chainman.ActiveChain();
         tip = active_chain.Tip();
-        const CBlockIndex* pindex{chainman.m_blockman.LookupBlockIndex(*hash)};
-        while (pindex != nullptr && active_chain.Contains(*pindex)) {
-            headers.push_back(pindex);
+        CBlockIndexOptRefConst pindex{*chainman.m_blockman.LookupBlockIndex(*hash)};
+        while (pindex.has_value() && active_chain.Contains(pindex->get())) {
+            headers.push_back(&pindex->get());
             if (headers.size() == *parsed_count) {
                 break;
             }
-            pindex = active_chain.Next(pindex);
+            pindex = active_chain.Next(pindex->get());
         }
     }
 
@@ -551,12 +551,12 @@ static bool rest_filter_header(const std::any& context, HTTPRequest* req, const 
         ChainstateManager& chainman = *maybe_chainman;
         LOCK(cs_main);
         CChain& active_chain = chainman.ActiveChain();
-        const CBlockIndex* pindex{chainman.m_blockman.LookupBlockIndex(*block_hash)};
-        while (pindex != nullptr && active_chain.Contains(*pindex)) {
-            headers.push_back(pindex);
+        CBlockIndexOptRefConst pindex{*chainman.m_blockman.LookupBlockIndex(*block_hash)};
+        while (pindex.has_value() && active_chain.Contains(pindex->get())) {
+            headers.push_back(&pindex->get());
             if (headers.size() == *parsed_count)
                 break;
-            pindex = active_chain.Next(pindex);
+            pindex = active_chain.Next(pindex->get());
         }
     }
 

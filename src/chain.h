@@ -19,6 +19,7 @@
 #include <algorithm>
 #include <cassert>
 #include <cstdint>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -299,6 +300,11 @@ protected:
     CBlockIndex& operator=(CBlockIndex&&) = delete;
 };
 
+//! Named type shortcut for an optional CBlockIndex reference.
+typedef std::optional<std::reference_wrapper<CBlockIndex>> CBlockIndexOptRef;
+//! Const-ref version of CBlockIndexOptRef (optional const CBlockIndex reference).
+typedef std::optional<std::reference_wrapper<const CBlockIndex>> CBlockIndexOptRefConst;
+
 /** Compute how much work an nBits value corresponds to. */
 arith_uint256 GetBitsProof(uint32_t bits);
 
@@ -413,13 +419,13 @@ public:
         return (*this)[pindex.nHeight] == &pindex;
     }
 
-    /** Find the successor of a block in this chain, or nullptr if the given index is not found or is the tip. */
-    CBlockIndex* Next(const CBlockIndex* pindex) const
+    /** Find the successor of a block in this chain, or nullopt if the given index is not found or is the tip. */
+    CBlockIndexOptRef Next(const CBlockIndex& pindex) const
     {
-        if (pindex && Contains(*pindex))
-            return (*this)[pindex->nHeight + 1];
-        else
-            return nullptr;
+        if (Contains(pindex))
+            if (auto next = (*this)[pindex.nHeight + 1]; next)
+                return std::ref(*next);
+        return std::nullopt;
     }
 
     /** Return the maximal height in the chain. Is equal to chain.Tip() ? chain.Tip()->nHeight : -1. */
