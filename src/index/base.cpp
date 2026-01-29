@@ -155,14 +155,15 @@ static const CBlockIndex* NextSyncBlock(const CBlockIndex* pindex_prev, CChain& 
         return chain.Genesis();
     }
 
-    const CBlockIndex* pindex = chain.Next(pindex_prev);
-    if (pindex) {
+    if (const CBlockIndex* pindex{chain.Next(*pindex_prev)}) {
         return pindex;
     }
 
     // Since block is not in the chain, return the next block in the chain AFTER the last common ancestor.
     // Caller will be responsible for rewinding back to the common ancestor.
-    return chain.Next(chain.FindFork(pindex_prev));
+    const auto fork = chain.FindFork(pindex_prev);
+    if (!fork) return nullptr;
+    return chain.Next(*fork);
 }
 
 bool BaseIndex::ProcessBlock(const CBlockIndex* pindex, const CBlock* block_data)
