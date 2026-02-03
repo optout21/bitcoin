@@ -92,13 +92,13 @@ BOOST_AUTO_TEST_CASE(cchain_findfork_tests)
 
     const auto check_same{[](const CChain& chain, const auto& blocks) {
         for (const auto& block : blocks) {
-            BOOST_CHECK_EQUAL(chain.FindFork(&block), &block);
+            BOOST_CHECK_EQUAL(chain.FindFork(block), &block);
         }
     }};
 
     const auto check_fork_point{[](const CChain& chain, const auto& blocks, const CBlockIndex* fork_point) {
         for (const auto& block : blocks) {
-            BOOST_CHECK_EQUAL(chain.FindFork(&block), fork_point);
+            BOOST_CHECK_EQUAL(chain.FindFork(block), fork_point);
         }
     }};
 
