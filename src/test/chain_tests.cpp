@@ -130,17 +130,17 @@ BOOST_AUTO_TEST_CASE(cchain_findfork_tests)
 
         // Test the blocks in the common part -> result should be the same
         for (auto& b : b_common) {
-            auto fork{cl.FindFork(b.get())};
+            auto fork{cl.FindFork(*b)};
             BOOST_CHECK_EQUAL(fork, b.get());
         }
         // Test the blocks on the longer fork -> result should be the same
         for (auto& b : b_longer) {
-            auto fork{cl.FindFork(b.get())};
+            auto fork{cl.FindFork(*b)};
             BOOST_CHECK_EQUAL(fork, b.get());
         }
         // Test the blocks on the other shorter fork -> result should be the fork point
         for (auto& b : b_shorter) {
-            auto fork{cl.FindFork(b.get())};
+            auto fork{cl.FindFork(*b)};
             BOOST_CHECK_EQUAL(fork, b_common.back().get());
         }
     }
@@ -158,17 +158,17 @@ BOOST_AUTO_TEST_CASE(cchain_findfork_tests)
 
         // Test the blocks in the common part -> result should be the same
         for (auto& b : b_common) {
-            auto fork{cs.FindFork(b.get())};
+            auto fork{cs.FindFork(*b)};
             BOOST_CHECK_EQUAL(fork, b.get());
         }
         // Test the blocks on the shorter fork -> result should be the same
         for (auto& b : b_shorter) {
-            auto fork{cs.FindFork(b.get())};
+            auto fork{cs.FindFork(*b)};
             BOOST_CHECK_EQUAL(fork, b.get());
         }
         // Test the blocks on the other longer fork -> result should be the fork point
         for (auto& b : b_longer) {
-            auto fork{cs.FindFork(b.get())};
+            auto fork{cs.FindFork(*b)};
             BOOST_CHECK_EQUAL(fork, b_common.back().get());
         }
     }

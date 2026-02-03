@@ -2349,7 +2349,7 @@ bool StartIndexBackgroundSync(NodeContext& node)
                 pindex = chainman.m_blockman.LookupBlockIndex(summary.best_block_hash);
                 if (!pindex) break;
                 if (!index_chain.Contains(*pindex)) {
-                    pindex = index_chain.FindFork(pindex);
+                    pindex = index_chain.FindFork(*pindex);
                 }
             }
             if (!pindex) {
