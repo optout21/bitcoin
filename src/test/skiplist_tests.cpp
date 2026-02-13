@@ -6,6 +6,7 @@
 #include <test/util/random.h>
 #include <test/util/setup_common.h>
 
+#include <bit>
 #include <cmath>
 #include <vector>
 
@@ -317,8 +318,8 @@ BOOST_AUTO_TEST_CASE(skip_height_analysis)
         // Absolute value maximum (derived empirically)
         BOOST_CHECK_LE(iteration_count, 130);
         // Dynamic bound, function of distance. Formula derived empirically.
-        const auto bound_log_distance{std::ceil(8.3 * std::log(delta) / std::log(2) - 35)};
-        BOOST_CHECK_LE(double(iteration_count), bound_log_distance);
+        const auto bound_log_distance{8 * std::bit_width<unsigned>(delta) - 29};
+        BOOST_CHECK_LE(iteration_count, bound_log_distance);
 
         // Also check that `GetAncestor` gives the same result
         auto p_ancestor{start_p.GetAncestor(target_height)};
