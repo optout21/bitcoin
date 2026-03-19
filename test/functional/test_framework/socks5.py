@@ -113,6 +113,8 @@ class Socks5Connection():
     def __init__(self, serv, conn):
         self.serv = serv
         self.conn = conn
+        # Forwarding socket, stored for close on stop
+        self.conn_to = None
 
     def handle(self):
         """Handle socks5 request according to RFC1928."""
@@ -182,6 +184,7 @@ class Socks5Connection():
                     logger.debug(f"Serving connection to {requested_to}, will redirect it to "
                                  f"{dest['actual_to_addr']}:{dest['actual_to_port']} instead")
                     with socket.create_connection((dest["actual_to_addr"], dest["actual_to_port"])) as conn_to:
+                        self.conn_to = conn_to
                         forward_sockets(self.conn, conn_to)
                 else:
                     logger.debug(f"Can't serve the connection to {requested_to}: the destinations factory returned None")
@@ -191,12 +194,30 @@ class Socks5Connection():
             # Fall through to disconnect
         except Exception as e:
             logger.exception("socks5 request handling failed.")
-            self.serv.queue.put(e)
+            if self.serv.running:
+                self.serv.queue.put(e)
         finally:
+            self.conn_to = None
             if not self.serv.keep_alive:
                 self.conn.close()
             else:
                 logger.debug("Keeping client connection alive")
+
+    def force_close(self):
+        # close underlying connections
+        try:
+            self.conn.close()
+            logger.debug("Incoming connection force-closed")
+        except OSError:
+            pass
+        if self.conn_to:
+            try:
+                self.conn_to.close()
+                logger.debug("Outgoing connection force-closed")
+                self.conn_to = None
+            except OSError:
+                pass
+
 
 class Socks5Server():
     def __init__(self, conf):
@@ -216,6 +237,9 @@ class Socks5Server():
         self.thread = None
         self.queue = queue.Queue() # report connections and exceptions to client
         self.keep_alive = conf.keep_alive
+        # Store the background handlers, needed for clean shutdown
+        self.handlers = []
+        self._handlers_lock = threading.Lock()
 
     def run(self):
         while self.running:
@@ -224,6 +248,8 @@ class Socks5Server():
                 conn = Socks5Connection(self, sockconn)
                 thread = threading.Thread(None, conn.handle)
                 thread.daemon = True
+                with self._handlers_lock:
+                    self.handlers.append((thread, conn))
                 thread.start()
 
     def start(self):
@@ -240,3 +266,14 @@ class Socks5Server():
         s.connect(self.conf.addr)
         s.close()
         self.thread.join()
+        # if there are active handler, close them
+        with self._handlers_lock:
+            items = list(self.handlers)
+        for thread, conn in items:
+            # check if thread is still active
+            thread.join(timeout=0)
+            if thread.is_alive():
+                conn.force_close()
+                thread.join(timeout=2)
+                if thread.is_alive():
+                    logger.warning("Stop(): A handler thread didn't finish after closing the sockets")
