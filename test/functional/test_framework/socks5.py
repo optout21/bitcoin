@@ -178,24 +178,24 @@ class Socks5Connection():
             requested_to_addr = addr.decode("utf-8")
             requested_to = format_addr_port(requested_to_addr, port)
 
-            if self.serv.conf.destinations_factory is not None:
-                dest = self.serv.conf.destinations_factory(requested_to_addr, port)
-                if dest is not None:
-                    logger.debug(f"Serving connection to {requested_to}, will redirect it to "
-                                 f"{dest['actual_to_addr']}:{dest['actual_to_port']} instead")
-                    with socket.create_connection((dest["actual_to_addr"], dest["actual_to_port"])) as conn_to:
-                        self.conn_to = conn_to
-                        forward_sockets(self.conn, conn_to)
+            if self.serv.is_running():
+                if self.serv.conf.destinations_factory is not None:
+                    dest = self.serv.conf.destinations_factory(requested_to_addr, port)
+                    if dest is not None:
+                        logger.debug(f"Serving connection to {requested_to}, will redirect it to "
+                                    f"{dest['actual_to_addr']}:{dest['actual_to_port']} instead")
+                        with socket.create_connection((dest["actual_to_addr"], dest["actual_to_port"])) as conn_to:
+                            self.conn_to = conn_to
+                            forward_sockets(self.conn, conn_to)
+                    else:
+                        logger.debug(f"Can't serve the connection to {requested_to}: the destinations factory returned None")
                 else:
-                    logger.debug(f"Can't serve the connection to {requested_to}: the destinations factory returned None")
-            else:
-                logger.debug(f"Can't serve the connection to {requested_to}: no destinations factory")
+                    logger.debug(f"Can't serve the connection to {requested_to}: no destinations factory")
 
             # Fall through to disconnect
         except Exception as e:
             logger.exception("socks5 request handling failed.")
-            if self.serv.running:
-                self.serv.queue.put(e)
+            self.serv.queue.put(e)
         finally:
             self.conn_to = None
             if not self.serv.keep_alive:
@@ -219,6 +219,16 @@ class Socks5Connection():
                 pass
 
 
+# Wrapper for thread.join(), which may throw for daemonic threads (in late stages of finalization)
+# https://docs.python.org/3/library/threading.html#meth-thread-join
+def is_daemonic_thread_alive(thread, timeout=0) -> bool:
+    try:
+        thread.join(timeout=timeout)
+    except Exception as e:
+        logger.debug(f"Exception in thread.join, {e}")
+        return False
+    return thread.is_alive()
+
 class Socks5Server():
     def __init__(self, conf):
         self.conf = conf
@@ -233,7 +243,8 @@ class Socks5Server():
         # to reflect the actual bound address so callers can use it.
         self.conf.addr = self.s.getsockname()
         self.s.listen(5)
-        self.running = False
+        self._running = False
+        self._running_lock = threading.Lock()
         self.thread = None
         self.queue = queue.Queue() # report connections and exceptions to client
         self.keep_alive = conf.keep_alive
@@ -241,10 +252,18 @@ class Socks5Server():
         self.handlers = []
         self._handlers_lock = threading.Lock()
 
+    def is_running(self) -> bool:
+        with self._running_lock:
+            return self._running
+
+    def set_running(self, new_value: bool):
+        with self._running_lock:
+            self._running = new_value
+
     def run(self):
-        while self.running:
+        while self.is_running():
             (sockconn, _) = self.s.accept()
-            if self.running:
+            if self.is_running():
                 conn = Socks5Connection(self, sockconn)
                 thread = threading.Thread(None, conn.handle)
                 thread.daemon = True
@@ -253,14 +272,14 @@ class Socks5Server():
                 thread.start()
 
     def start(self):
-        assert not self.running
-        self.running = True
+        assert not self.is_running()
+        self.set_running(True)
         self.thread = threading.Thread(None, self.run)
         self.thread.daemon = True
         self.thread.start()
 
     def stop(self):
-        self.running = False
+        self.set_running(False)
         # connect to self to end run loop
         s = socket.socket(self.conf.af)
         s.connect(self.conf.addr)
@@ -271,9 +290,7 @@ class Socks5Server():
             items = list(self.handlers)
         for thread, conn in items:
             # check if thread is still active
-            thread.join(timeout=0)
-            if thread.is_alive():
+            if is_daemonic_thread_alive(thread):
                 conn.force_close()
-                thread.join(timeout=2)
-                if thread.is_alive():
+                if is_daemonic_thread_alive(thread, timeout=2):
                     logger.warning("Stop(): A handler thread didn't finish after closing the sockets")
