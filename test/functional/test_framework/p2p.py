@@ -773,6 +773,8 @@ class NetworkThread(threading.Thread):
 
         cls.network_event_loop.set_exception_handler(exception_handler)
         coroutine = cls.create_listen_server(addr, port, callback, p2p)
+        print("create_listen_server", addr, port)
+        import time; time.sleep(0.25)
         cls.network_event_loop.call_soon_threadsafe(cls.network_event_loop.create_task, coroutine)
 
     @classmethod
