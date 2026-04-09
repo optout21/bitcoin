@@ -209,22 +209,24 @@ class Socks5Connection():
                 self.conn.close()
             else:
                 logger.debug("Keeping client connection alive")
-            if self.wakeup_socket_pair:
-                try:
-                    self.wakeup_socket_pair[0].close()
-                    self.wakeup_socket_pair[1].close()
-                except OSError:
-                    pass
-                self.wakeup_socket_pair = None
-            if self.handler_index is not None:
-                self.serv.remove_handler(self.handler_index)
-                self.handler_index = None
+            s0 = self.wakeup_socket_pair[0]
+            s1 = self.wakeup_socket_pair[1]
+            self.wakeup_socket_pair = None
+            try:
+                s0.close()
+                s1.close()
+            except OSError:
+                pass
+            self.wakeup_socket_pair = None
+            self.serv.remove_handler(self.handler_index)
+            self.handler_index = None
 
-    def force_close(self):
+    def wakeup(self):
         # Wake up the blocking forwarding select by writing to the wake-up socket
         try:
-            if self.wakeup_socket_pair:
-                self.wakeup_socket_pair[0].send("CloseWakeup".encode())
+            socket_pair = self.wakeup_socket_pair
+            if socket_pair is not None:
+                socket_pair[0].send("CloseWakeup".encode())
                 logger.debug("Waking up forwarding thread")
         except OSError as e:
             logger.warning(f"Error waking up forwarding thread: {e}")
@@ -263,6 +265,7 @@ class Socks5Server():
         self.queue = queue.Queue() # report connections and exceptions to client
         self.keep_alive = conf.keep_alive
         # Store the background handlers, needed for clean shutdown
+        # Append-only array, completed handlers are set to None
         self._handlers = []
         self._handlers_lock = threading.Lock()
 
@@ -284,11 +287,12 @@ class Socks5Server():
                 with self._handlers_lock:
                     conn.handler_index = len(self._handlers)
                     self._handlers.append((thread, conn))
+                    assert(conn.handler_index < len(self._handlers))
                 thread.start()
 
     def remove_handler(self, handler_index):
         with self._handlers_lock:
-            if handler_index is not None and handler_index < len(self._handlers):
+            if handler_index < len(self._handlers):
                 if self._handlers[handler_index] is not None:
                     self._handlers[handler_index] = None
                     logger.debug(f"Handler {handler_index} removed")
@@ -314,7 +318,7 @@ class Socks5Server():
                 (thread, conn) = items[i]
                 # check if thread is still active
                 if not try_join_daemon_thread(thread, timeout=0):
-                    conn.force_close()
+                    conn.wakeup()
                     if try_join_daemon_thread(thread, timeout=2):
                         logger.debug(f"Stop(): Handler {i} thread joined")
                     else:
