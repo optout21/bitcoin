@@ -194,6 +194,11 @@ public:
         }
         SetState(new_state, pair, sentinel);
     }
+    static void SetSpent(CoinsCachePair& pair, CoinsCachePair& sentinel) noexcept {
+        if (pair.second.IsSpent()) return;
+        SetDirty(pair, sentinel);
+        pair.second.coin.Clear();
+    }
 
     void SetClean() noexcept
     {
@@ -205,6 +210,7 @@ public:
     }
     bool IsDirty() const noexcept { return m_state != NOTFRESH_NOTDIRTY; }
     bool IsFresh() const noexcept { return m_state == FRESH_DIRTY; }
+    bool IsSpent() const noexcept { return coin.IsSpent(); }
 
     //! Only call Next when this entry is DIRTY, FRESH, or both
     CoinsCachePair* Next() const noexcept
@@ -316,7 +322,7 @@ struct CoinsViewCacheCursor
         return next_entry;
     }
 
-    inline bool WillErase(CoinsCachePair& current) const noexcept { return m_will_erase || current.second.coin.IsSpent(); }
+    inline bool WillErase(CoinsCachePair& current) const noexcept { return m_will_erase || current.second.IsSpent(); }
     size_t GetDirtyCount() const noexcept { return m_dirty_count; }
     size_t GetTotalCount() const noexcept { return m_map.size(); }
 private:

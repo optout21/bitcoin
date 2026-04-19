@@ -137,7 +137,7 @@ void CCoinsViewDB::BatchWrite(CoinsViewCacheCursor& cursor, const uint256& block
     for (auto it{cursor.Begin()}; it != cursor.End();) {
         if (it->second.IsDirty()) {
             CoinEntry entry(&it->first);
-            if (it->second.coin.IsSpent()) {
+            if (it->second.IsSpent()) {
                 batch.Erase(entry);
             } else {
                 batch.Write(entry, it->second.coin);

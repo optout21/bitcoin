@@ -23,7 +23,7 @@ CoinsViewEmpty& CoinsViewEmpty::Get()
 std::optional<Coin> CCoinsViewCache::PeekCoin(const COutPoint& outpoint) const
 {
     if (auto it{cacheCoins.find(outpoint)}; it != cacheCoins.end()) {
-        return it->second.coin.IsSpent() ? std::nullopt : std::optional{it->second.coin};
+        return it->second.IsSpent() ? std::nullopt : std::optional{it->second.coin};
     }
     return base->PeekCoin(outpoint);
 }
@@ -50,7 +50,7 @@ CCoinsMap::iterator CCoinsViewCache::FetchCoin(const COutPoint &outpoint) const 
         if (auto coin{FetchCoinFromBase(outpoint)}) {
             ret->second.coin = std::move(*coin);
             cachedCoinsUsage += ret->second.coin.DynamicMemoryUsage();
-            Assert(!ret->second.coin.IsSpent());
+            Assert(!ret->second.IsSpent());
         } else {
             cacheCoins.erase(ret);
             return cacheCoins.end();
@@ -61,7 +61,7 @@ CCoinsMap::iterator CCoinsViewCache::FetchCoin(const COutPoint &outpoint) const 
 
 std::optional<Coin> CCoinsViewCache::GetCoin(const COutPoint& outpoint) const
 {
-    if (auto it{FetchCoin(outpoint)}; it != cacheCoins.end() && !it->second.coin.IsSpent()) return it->second.coin;
+    if (auto it{FetchCoin(outpoint)}; it != cacheCoins.end() && !it->second.IsSpent()) return it->second.coin;
     return std::nullopt;
 }
 
@@ -73,7 +73,7 @@ void CCoinsViewCache::AddCoin(const COutPoint &outpoint, Coin&& coin, bool possi
     std::tie(it, inserted) = cacheCoins.emplace(std::piecewise_construct, std::forward_as_tuple(outpoint), std::tuple<>());
     bool fresh = false;
     if (!possible_overwrite) {
-        if (!it->second.coin.IsSpent()) {
+        if (!it->second.IsSpent()) {
             throw std::logic_error("Attempted to overwrite an unspent coin (when possible_overwrite is false)");
         }
         // If the coin exists in this cache as a spent coin and is DIRTY, then
@@ -146,9 +146,8 @@ bool CCoinsViewCache::SpendCoin(const COutPoint &outpoint, Coin* moveout) {
     if (it->second.IsFresh()) {
         cacheCoins.erase(it);
     } else {
-        CCoinsCacheEntry::SetDirty(*it, m_sentinel);
+        CCoinsCacheEntry::SetSpent(*it, m_sentinel);
         ++m_dirty_count;
-        it->second.coin.Clear();
     }
     return true;
 }
@@ -167,12 +166,12 @@ const Coin& CCoinsViewCache::AccessCoin(const COutPoint &outpoint) const {
 bool CCoinsViewCache::HaveCoin(const COutPoint& outpoint) const
 {
     CCoinsMap::const_iterator it = FetchCoin(outpoint);
-    return (it != cacheCoins.end() && !it->second.coin.IsSpent());
+    return (it != cacheCoins.end() && !it->second.IsSpent());
 }
 
 bool CCoinsViewCache::HaveCoinInCache(const COutPoint &outpoint) const {
     CCoinsMap::const_iterator it = cacheCoins.find(outpoint);
-    return (it != cacheCoins.end() && !it->second.coin.IsSpent());
+    return (it != cacheCoins.end() && !it->second.IsSpent());
 }
 
 uint256 CCoinsViewCache::GetBestBlock() const {
@@ -334,7 +333,7 @@ void CCoinsViewCache::SanityCheck() const
     size_t recomputed_usage = 0;
     size_t count_dirty = 0;
     for (const auto& [_, entry] : cacheCoins) {
-        if (entry.coin.IsSpent()) {
+        if (entry.IsSpent()) {
             assert(entry.IsDirty() && !entry.IsFresh()); // A spent coin must be dirty and cannot be fresh
         } else {
             assert(entry.IsDirty() || !entry.IsFresh()); // An unspent coin must not be fresh if not dirty
