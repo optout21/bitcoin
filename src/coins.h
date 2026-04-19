@@ -108,6 +108,31 @@ using CoinsCachePair = std::pair<const COutPoint, CCoinsCacheEntry>;
  */
 struct CCoinsCacheEntry
 {
+public:
+    enum State {
+        /**
+         * DIRTY means the CCoinsCacheEntry is potentially different from the
+         * version in the parent cache. Failure to mark a coin as DIRTY when
+         * it is potentially different from the parent cache will cause a
+         * consensus failure, since the coin's state won't get written to the
+         * parent when the cache is flushed.
+         *
+         * FRESH means the parent cache does not have this coin or that it is a
+         * spent coin in the parent cache. If a FRESH coin in the cache is
+         * later spent, it can be deleted entirely and doesn't ever need to be
+         * flushed to the parent. This is a performance optimization. Marking a
+         * coin as FRESH when it exists unspent in the parent cache will cause a
+         * consensus failure, since it might not be deleted from the parent
+         * when this cache is flushed.
+         */
+        //! unspent, FRESH, DIRTY (e.g. a new coin created in the cache)
+        FRESH_DIRTY,
+        //! unspent, not FRESH, DIRTY (e.g. a coin changed in the cache during a reorg)
+        NOTFRESH_DIRTY,
+        //! unspent, not FRESH, not DIRTY (e.g. an unspent coin fetched from the parent cache)
+        NOTFRESH_NOTDIRTY,
+    };
+
 private:
     /**
      * These are used to create a doubly linked list of flagged entries.
@@ -121,13 +146,12 @@ private:
      */
     CoinsCachePair* m_prev{nullptr};
     CoinsCachePair* m_next{nullptr};
-    uint8_t m_flags{0};
+    State m_state{NOTFRESH_NOTDIRTY};
 
     //! Adding a flag requires a reference to the sentinel of the flagged pair linked list.
-    static void AddFlags(uint8_t flags, CoinsCachePair& pair, CoinsCachePair& sentinel) noexcept
+    static void SetState(State state, CoinsCachePair& pair, CoinsCachePair& sentinel) noexcept
     {
-        Assume(flags & (DIRTY | FRESH));
-        if (!pair.second.m_flags) {
+        if (pair.second.m_state != NOTFRESH_NOTDIRTY) {
             Assume(!pair.second.m_prev && !pair.second.m_next);
             pair.second.m_prev = sentinel.second.m_prev;
             pair.second.m_next = &sentinel;
@@ -135,32 +159,11 @@ private:
             pair.second.m_prev->second.m_next = &pair;
         }
         Assume(pair.second.m_prev && pair.second.m_next);
-        pair.second.m_flags |= flags;
+        pair.second.m_state = state;
     }
 
 public:
     Coin coin; // The actual cached data.
-
-    enum Flags {
-        /**
-         * DIRTY means the CCoinsCacheEntry is potentially different from the
-         * version in the parent cache. Failure to mark a coin as DIRTY when
-         * it is potentially different from the parent cache will cause a
-         * consensus failure, since the coin's state won't get written to the
-         * parent when the cache is flushed.
-         */
-        DIRTY = (1 << 0),
-        /**
-         * FRESH means the parent cache does not have this coin or that it is a
-         * spent coin in the parent cache. If a FRESH coin in the cache is
-         * later spent, it can be deleted entirely and doesn't ever need to be
-         * flushed to the parent. This is a performance optimization. Marking a
-         * coin as FRESH when it exists unspent in the parent cache will cause a
-         * consensus failure, since it might not be deleted from the parent
-         * when this cache is flushed.
-         */
-        FRESH = (1 << 1),
-    };
 
     CCoinsCacheEntry() noexcept = default;
     explicit CCoinsCacheEntry(Coin&& coin_) noexcept : coin(std::move(coin_)) {}
@@ -169,31 +172,51 @@ public:
         SetClean();
     }
 
-    static void SetDirty(CoinsCachePair& pair, CoinsCachePair& sentinel) noexcept { AddFlags(DIRTY, pair, sentinel); }
-    static void SetFresh(CoinsCachePair& pair, CoinsCachePair& sentinel) noexcept { AddFlags(FRESH, pair, sentinel); }
+    static void SetDirty(CoinsCachePair& pair, CoinsCachePair& sentinel) noexcept {
+        State new_state = pair.second.m_state;
+        if (new_state == NOTFRESH_NOTDIRTY) {
+            new_state = NOTFRESH_DIRTY;
+        }
+        SetState(new_state, pair, sentinel);
+    }
+    static void SetFresh(CoinsCachePair& pair, CoinsCachePair& sentinel) noexcept {
+        State new_state;
+        switch(pair.second.m_state) {
+            case FRESH_DIRTY:
+                new_state = FRESH_DIRTY; // no change
+                break;
+            case NOTFRESH_DIRTY:
+                new_state = FRESH_DIRTY;
+                break;
+            case NOTFRESH_NOTDIRTY:
+                new_state = FRESH_DIRTY; // also dirty
+                break;
+        }
+        SetState(new_state, pair, sentinel);
+    }
 
     void SetClean() noexcept
     {
-        if (!m_flags) return;
+        if (m_state != NOTFRESH_NOTDIRTY) return;
         m_next->second.m_prev = m_prev;
         m_prev->second.m_next = m_next;
-        m_flags = 0;
+        m_state = NOTFRESH_NOTDIRTY;
         m_prev = m_next = nullptr;
     }
-    bool IsDirty() const noexcept { return m_flags & DIRTY; }
-    bool IsFresh() const noexcept { return m_flags & FRESH; }
+    bool IsDirty() const noexcept { return m_state != NOTFRESH_NOTDIRTY; }
+    bool IsFresh() const noexcept { return m_state == FRESH_DIRTY; }
 
     //! Only call Next when this entry is DIRTY, FRESH, or both
     CoinsCachePair* Next() const noexcept
     {
-        Assume(m_flags);
+        Assume(m_state != NOTFRESH_NOTDIRTY);
         return m_next;
     }
 
     //! Only call Prev when this entry is DIRTY, FRESH, or both
     CoinsCachePair* Prev() const noexcept
     {
-        Assume(m_flags);
+        Assume(m_state != NOTFRESH_NOTDIRTY);
         return m_prev;
     }
 
@@ -204,7 +227,7 @@ public:
         m_prev = &pair;
         m_next = &pair;
         // Set sentinel to DIRTY so we can call Next on it
-        m_flags = DIRTY;
+        m_state = NOTFRESH_DIRTY;
     }
 };
 
