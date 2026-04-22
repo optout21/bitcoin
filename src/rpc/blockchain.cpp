@@ -2228,12 +2228,92 @@ static RPCMethod getblockstats()
     };
 }
 
+
+
+#include <map>
+#include <vector>
+
+typedef uint32_t AddressIndexHashKey;
+
+struct AddressIndexEntry {
+    std::vector<COutPoint> outpoints;
+
+    AddressIndexEntry() = default;
+
+    void Add(COutPoint& outpoint) {
+        outpoints.emplace_back(outpoint);
+    }
+};
+
+/// @brief An output-script-hash to UTXO index, in memory.
+class AddressIndex {
+public:
+    std::map<AddressIndexHashKey, AddressIndexEntry> map;
+    uint64_t total_count{0};
+
+    AddressIndex() = default;
+
+    /// @brief Obtain a small hash from the output script.
+    /// For now, take 4 bytes from the middle. Should be more sophisticated.
+    /// @param script The output script ('address')
+    /// @return 
+    static AddressIndexHashKey KeyFromScript(const CScript& script) {
+        // precond: script.size() >= 6
+        size_t middle_idx = script.size() / 2;
+        return
+            // (uint64_t(script[middle_idx - 2]) << 24) +
+            (uint64_t(script[middle_idx - 1]) << 16) +
+            (uint64_t(script[middle_idx    ]) <<  8) +
+             uint64_t(script[middle_idx + 1]);
+    }
+
+    void Add(const AddressIndexHashKey& key, COutPoint& outpoint) {
+        map[key].Add(outpoint);
+        ++total_count;
+    }
+
+    void Add(const CScript& script_pubkey, COutPoint& outpoint) {
+        const auto key{KeyFromScript(script_pubkey)};
+        Add(key, outpoint);
+    }
+
+    uint64_t KeyCount() const { return uint64_t(map.size()); }
+    uint64_t TotalCount() const { return total_count; }
+};
+
+AddressIndex g_address_index;
+
+
+
 namespace {
 //! Search for a given set of pubkey scripts
 bool FindScriptPubKey(std::atomic<int>& scan_progress, const std::atomic<bool>& should_abort, int64_t& count, CCoinsViewCursor* cursor, const std::set<CScript>& needles, std::map<COutPoint, Coin>& out_results, std::function<void()>& interruption_point)
 {
+    LogInfo("FindScriptPubKey START\n");
+
+    if (g_address_index.TotalCount() == 0) {
+        LogInfo("AddressIndex Build START\n");
+        uint64_t cnt{0};
+        while (cursor->Valid()) {
+            ++cnt;
+            COutPoint outpoint;
+            Coin coin;
+            if (!cursor->GetKey(outpoint) || !cursor->GetValue(coin)) return false;
+            g_address_index.Add(coin.out.scriptPubKey, outpoint);
+            if (cnt % (1 << 20) == 0) {
+                LogInfo("AIB count %ld  totsize %ld\n", cnt, g_address_index.TotalCount());
+            }
+            cursor->Next();
+        }
+        LogInfo("AddressIndex Build DONE, totsize %ls  keycount %ld  cnt %ld\n", g_address_index.TotalCount(), g_address_index.KeyCount(), cnt);
+        // TODO add time meas.
+    }
+
+    // TODO: if index is filled, use that for search
+
     scan_progress = 0;
     count = 0;
+    uint64_t tot_size{0};
     while (cursor->Valid()) {
         COutPoint key;
         Coin coin;
@@ -2250,11 +2330,23 @@ bool FindScriptPubKey(std::atomic<int>& scan_progress, const std::atomic<bool>& 
             uint32_t high = 0x100 * *UCharCast(key.hash.begin()) + *(UCharCast(key.hash.begin()) + 1);
             scan_progress = (int)(high * 100.0 / 65536.0 + 0.5);
         }
+        if (count % (1 << 20) == 0) {
+            LogInfo("FSP prog %f  count %ld  totsize %ld\n", scan_progress, count, tot_size);
+        }
         if (needles.contains(coin.out.scriptPubKey)) {
             out_results.emplace(key, coin);
+            LogInfo("MATCH %ld %s %s", count, key.ToString(), coin.out.ToString());
         }
         cursor->Next();
+
+        // tot_size += coin.DynamicMemoryUsage();
+        tot_size += coin.out.scriptPubKey.size();
+        // if (count == 1000) {
+        //     LogInfo("script %s", coin.out.ToString());
+        //     assert(false);
+        // }
     }
+    LogInfo("FindScriptPubKey DONE count %ld  totsize %ld\n", count, tot_size);
     scan_progress = 100;
     return true;
 }
