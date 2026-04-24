@@ -2243,6 +2243,8 @@ struct AddressIndexEntry {
     void Add(COutPoint& outpoint) {
         outpoints.emplace_back(outpoint);
     }
+
+    uint64_t Count() const { return uint64_t(outpoints.size()); }
 };
 
 /// @brief An output-script-hash to UTXO index, in memory.
@@ -2277,6 +2279,15 @@ public:
         Add(key, outpoint);
     }
 
+    std::optional<AddressIndexEntry> Find(const CScript& script_pubkey) {
+        const auto key{KeyFromScript(script_pubkey)};
+        auto iter = map.find(key);
+        if (iter == map.end()) {
+            return std::nullopt;
+        }
+        return iter->second;
+    }
+
     uint64_t KeyCount() const { return uint64_t(map.size()); }
     uint64_t TotalCount() const { return total_count; }
 };
@@ -2287,7 +2298,7 @@ AddressIndex g_address_index;
 
 namespace {
 //! Search for a given set of pubkey scripts
-bool FindScriptPubKey(std::atomic<int>& scan_progress, const std::atomic<bool>& should_abort, int64_t& count, CCoinsViewCursor* cursor, const std::set<CScript>& needles, std::map<COutPoint, Coin>& out_results, std::function<void()>& interruption_point)
+bool FindScriptPubKey(std::atomic<int>& scan_progress, const std::atomic<bool>& should_abort, int64_t& count, ChainstateManager& chainman, CCoinsViewCursor* cursor, const std::set<CScript>& needles, std::map<COutPoint, Coin>& out_results, std::function<void()>& interruption_point)
 {
     LogInfo("FindScriptPubKey START\n");
 
@@ -2309,7 +2320,33 @@ bool FindScriptPubKey(std::atomic<int>& scan_progress, const std::atomic<bool>& 
         // TODO add time meas.
     }
 
-    // TODO: if index is filled, use that for search
+    // Perform the search using the address index
+    {
+        assert(g_address_index.TotalCount() > 0);
+
+        LogInfo("FindScriptPubKey Address-index-based-search START\n");
+        scan_progress = 0;
+        for (const CScript& needle : needles) {
+            LOCK(cs_main); // lock scope is restricted, but need to check/change this
+            Chainstate& active_chainstate = chainman.ActiveChainstate();
+            auto& coinsdb = active_chainstate.CoinsDB();
+
+            const auto index_entry_opt = g_address_index.Find(needle);
+            LogInfo("Found %ld entries for needle ... \n", index_entry_opt ? index_entry_opt->Count() : 0);
+            if (index_entry_opt) {
+                for(const auto& outpoint : index_entry_opt->outpoints) {
+                    const auto& coin_opt = coinsdb.GetCoin(outpoint);
+                    // hash key is lossy, so verify the script matches to rule out collisions
+                    if (coin_opt && coin_opt->out.scriptPubKey == needle) {
+                        out_results.emplace(outpoint, *coin_opt);
+                    }
+                }
+            }
+        }
+        LogInfo("FindScriptPubKey DONE (indexed) results %ld\n", out_results.size());
+        scan_progress = 100;
+        return true;
+    }
 
     scan_progress = 0;
     count = 0;
@@ -2544,7 +2581,7 @@ static RPCMethod scantxoutset()
             pcursor = CHECK_NONFATAL(active_chainstate.CoinsDB().Cursor());
             tip = CHECK_NONFATAL(active_chainstate.m_chain.Tip());
         }
-        bool res = FindScriptPubKey(g_scan_progress, g_should_abort_scan, count, pcursor.get(), needles, coins, node.rpc_interruption_point);
+        bool res = FindScriptPubKey(g_scan_progress, g_should_abort_scan, count, EnsureChainman(node), pcursor.get(), needles, coins, node.rpc_interruption_point);
         result.pushKV("success", res);
         result.pushKV("txouts", count);
         result.pushKV("height", tip->nHeight);
