@@ -246,83 +246,78 @@ BOOST_AUTO_TEST_CASE(bip32_max_depth) {
 
 BOOST_AUTO_TEST_CASE(parse_hd_keypath)
 {
-    std::vector<uint32_t> keypath;
+    struct TestCase {
+        bool is_valid;
+        std::string keypath;
+    };
 
-    BOOST_CHECK(ParseHDKeypath("1/1/1/1/1/1/1/1/1/1/1/1/1/1/1/1/1/1/1/1/1/1/1/1/1/1/1/1", keypath));
-    BOOST_CHECK(!ParseHDKeypath("///////////////////////////", keypath));
+    const std::vector<TestCase> tests{
+        // 28 unhardened ones, no trailing slash
+        {true,  "1/1/1/1/1/1/1/1/1/1/1/1/1/1/1/1/1/1/1/1/1/1/1/1/1/1/1/1"},
+        {false, "///////////////////////////"},
+        // 26 unhardened ones, then hardened 1, then unhardened 1
+        {true,  "1/1/1/1/1/1/1/1/1/1/1/1/1/1/1/1/1/1/1/1/1/1/1/1/1/1/1'/1"},
+        {false, "//////////////////////////'/"},
+        // 27 unhardened ones, trailing slash ignored
+        {true,  "1/1/1/1/1/1/1/1/1/1/1/1/1/1/1/1/1/1/1/1/1/1/1/1/1/1/1/"},
+        {false, "1///////////////////////////"},
+        // 26 unhardened ones, hardened 1, trailing slash ignored
+        {true,  "1/1/1/1/1/1/1/1/1/1/1/1/1/1/1/1/1/1/1/1/1/1/1/1/1/1/1'/"},
+        {false, "1/'//////////////////////////"},
+        {true,  ""},
+        {false, " "},
+        {true,  "0"},
+        {false, "O"},
+        {true,  "0000'/0000'/0000'"},
+        {false, "0000,/0000,/0000,"},
+        {true,  "01234"},
+        {false, "0x1234"},
+        {true,  "1"},
+        {false, " 1"},
+        {true,  "42"},
+        {false, "m42"},
+        // A path element's numeric part is capped at 2^31-1; the top bit is
+        // reserved for the hardened marker (h or ').
+        {true,  "2147483647"},  // 0x7fffffff, largest normal index
+        {false, "2147483648"},  // 0x80000000, would set the hardened bit
+        {false, "4294967295"},  // 0xffffffff
+        {false, "4294967296"},  // 0xffffffff + 1
+        {true,  "m"},
+        {false, "n"},
+        {true,  "m/"},
+        {false, "n/"},
+        {true,  "m/0"},
+        {false, "n/0"},
+        {true,  "m/0'"},
+        {false, "m/0''"},
+        {true,  "m/0h/1h/2h"},
+        {false, "m/0hh"},
+        {false, "m/h0"},
+        {true,  "m/0'/0'"},
+        {false, "m/'0/0'"},
+        {true,  "m/0/0"},
+        {false, "n/0/0"},
+        {true,  "m/0/0/00"},
+        {false, "m/0/0/f00"},
+        {true,  "m/0/0/000000000000000000000000000000000000000000000000000000000000000000000000000000000000"},
+        {false, "m/1/1/111111111111111111111111111111111111111111111111111111111111111111111111111111111111"},
+        {true,  "m/0/00/0"},
+        {false, "m/0'/00/'0"},
+        {true,  "m/1/"},
+        {false, "m/1//"},
+        {true,  "m/0/2147483647"},  // 0x7fffffff
+        {false, "m/0/2147483648"},  // 0x80000000
+        {true,  "m/2147483647"},    // 0x7fffffff
+        {false, "m/2147483648"},    // 0x80000000
+        {true,  "1/2h/3h"},
+        {true,  "1/2'/3h"},
+        {false, "1/2H/3H"}
+    };
 
-    BOOST_CHECK(ParseHDKeypath("1/1/1/1/1/1/1/1/1/1/1/1/1/1/1/1/1/1/1/1/1/1/1/1/1/1/1'/1", keypath));
-    BOOST_CHECK(!ParseHDKeypath("//////////////////////////'/", keypath));
-
-    BOOST_CHECK(ParseHDKeypath("1/1/1/1/1/1/1/1/1/1/1/1/1/1/1/1/1/1/1/1/1/1/1/1/1/1/1/", keypath));
-    BOOST_CHECK(!ParseHDKeypath("1///////////////////////////", keypath));
-
-    BOOST_CHECK(ParseHDKeypath("1/1/1/1/1/1/1/1/1/1/1/1/1/1/1/1/1/1/1/1/1/1/1/1/1/1/1'/", keypath));
-    BOOST_CHECK(!ParseHDKeypath("1/'//////////////////////////", keypath));
-
-    BOOST_CHECK(ParseHDKeypath("", keypath));
-    BOOST_CHECK(!ParseHDKeypath(" ", keypath));
-
-    BOOST_CHECK(ParseHDKeypath("0", keypath));
-    BOOST_CHECK(!ParseHDKeypath("O", keypath));
-
-    BOOST_CHECK(ParseHDKeypath("0000'/0000'/0000'", keypath));
-    BOOST_CHECK(!ParseHDKeypath("0000,/0000,/0000,", keypath));
-
-    BOOST_CHECK(ParseHDKeypath("01234", keypath));
-    BOOST_CHECK(!ParseHDKeypath("0x1234", keypath));
-
-    BOOST_CHECK(ParseHDKeypath("1", keypath));
-    BOOST_CHECK(!ParseHDKeypath(" 1", keypath));
-
-    BOOST_CHECK(ParseHDKeypath("42", keypath));
-    BOOST_CHECK(!ParseHDKeypath("m42", keypath));
-
-    // A path element's numeric part is capped at 2^31-1; the top bit is
-    // reserved for the hardened marker (h or ').
-    BOOST_CHECK(ParseHDKeypath("2147483647", keypath));  // 0x7fffffff, largest normal index
-    BOOST_CHECK(!ParseHDKeypath("2147483648", keypath)); // 0x80000000, would set the hardened bit
-    BOOST_CHECK(!ParseHDKeypath("4294967295", keypath)); // 0xffffffff
-    BOOST_CHECK(!ParseHDKeypath("4294967296", keypath)); // uint32_t max + 1
-
-    BOOST_CHECK(ParseHDKeypath("m", keypath));
-    BOOST_CHECK(!ParseHDKeypath("n", keypath));
-
-    BOOST_CHECK(ParseHDKeypath("m/", keypath));
-    BOOST_CHECK(!ParseHDKeypath("n/", keypath));
-
-    BOOST_CHECK(ParseHDKeypath("m/0", keypath));
-    BOOST_CHECK(!ParseHDKeypath("n/0", keypath));
-
-    BOOST_CHECK(ParseHDKeypath("m/0'", keypath));
-    BOOST_CHECK(!ParseHDKeypath("m/0''", keypath));
-
-    keypath.clear();
-    BOOST_REQUIRE(ParseHDKeypath("m/0h/1h/2h", keypath));
-    BOOST_REQUIRE_EQUAL(keypath.size(), 3);
-    BOOST_CHECK_EQUAL(keypath[0], 0x80000000U);
-    BOOST_CHECK_EQUAL(keypath[1], 0x80000001U);
-    BOOST_CHECK_EQUAL(keypath[2], 0x80000002U);
-    BOOST_CHECK(!ParseHDKeypath("m/0hh", keypath));
-    BOOST_CHECK(!ParseHDKeypath("m/h0", keypath));
-
-    BOOST_CHECK(ParseHDKeypath("m/0'/0'", keypath));
-    BOOST_CHECK(!ParseHDKeypath("m/'0/0'", keypath));
-
-    BOOST_CHECK(ParseHDKeypath("m/0/0", keypath));
-    BOOST_CHECK(!ParseHDKeypath("n/0/0", keypath));
-
-    BOOST_CHECK(ParseHDKeypath("m/0/0/00", keypath));
-    BOOST_CHECK(!ParseHDKeypath("m/0/0/f00", keypath));
-
-    BOOST_CHECK(ParseHDKeypath("m/0/0/000000000000000000000000000000000000000000000000000000000000000000000000000000000000", keypath));
-    BOOST_CHECK(!ParseHDKeypath("m/1/1/111111111111111111111111111111111111111111111111111111111111111111111111111111111111", keypath));
-
-    BOOST_CHECK(ParseHDKeypath("m/0/00/0", keypath));
-    BOOST_CHECK(!ParseHDKeypath("m/0'/00/'0", keypath));
-
-    BOOST_CHECK(ParseHDKeypath("m/1/", keypath));
-    BOOST_CHECK(!ParseHDKeypath("m/1//", keypath));
+    for (const auto& [is_valid, keypath_str] : tests) {
+        std::vector<uint32_t> keypath;
+        BOOST_CHECK_EQUAL(ParseHDKeypath(keypath_str, keypath), is_valid);
+    }
 }
 
 BOOST_AUTO_TEST_SUITE_END()
