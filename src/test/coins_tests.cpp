@@ -256,7 +256,7 @@ void SimulationTest(CCoinsViewWrite* base, bool fake_best_block)
                 //Add a new cache
                 CCoinsViewWrite* tip = base;
                 if (stack.size() > 0) {
-                    tip = stack.back().get();
+                    tip = stack.back().get()->AsWrite();
                 } else {
                     removed_all_caches = true;
                 }
@@ -509,7 +509,7 @@ BOOST_FIXTURE_TEST_CASE(updatecoins_simulation_test, UpdateTest)
             if (stack.size() == 0 || (stack.size() < 4 && m_rng.randbool())) {
                 CCoinsViewWrite* tip = &base;
                 if (stack.size() > 0) {
-                    tip = stack.back().get();
+                    tip = stack.back().get()->AsWrite();
                 }
                 stack.push_back(std::make_unique<CCoinsViewCacheTest>(tip));
             }
@@ -671,15 +671,15 @@ public:
     SingleEntryCacheTest(const CAmount base_value, const MaybeCoin& cache_coin)
     {
         auto base_cache_coin{base_value == ABSENT ? MISSING : CoinEntry{base_value, CoinEntry::State::DIRTY}};
-        WriteCoinsViewEntry(base, base_cache_coin);
+        WriteCoinsViewEntry(*base.AsWrite(), base_cache_coin);
         if (cache_coin) {
             cache.usage() += InsertCoinsMapEntry(cache.map(), cache.sentinel(), *cache_coin);
             cache.dirty() += cache_coin->IsDirty();
         }
     }
 
-    CCoinsViewCacheTest base{&CoinsViewEmpty::Get()};
-    CCoinsViewCacheTest cache{&base};
+    CCoinsViewCacheTest base{(CCoinsViewWrite*)&CoinsViewEmpty::Get()};
+    CCoinsViewCacheTest cache{base.AsWrite()};
 };
 
 static void CheckAccessCoin(const CAmount base_value, const MaybeCoin& cache_coin, const MaybeCoin& expected)
@@ -792,7 +792,7 @@ BOOST_AUTO_TEST_CASE(ccoins_add)
 static void CheckWriteCoins(const MaybeCoin& parent, const MaybeCoin& child, const CoinOrError& expected)
 {
     SingleEntryCacheTest test{ABSENT, parent};
-    auto write_coins{[&] { WriteCoinsViewEntry(test.cache, child); }};
+    auto write_coins{[&] { WriteCoinsViewEntry(*test.cache.AsWrite(), child); }};
     if (auto* expected_coin{std::get_if<MaybeCoin>(&expected)}) {
         write_coins();
         test.cache.SelfTest(/*sanity_check=*/false);
@@ -1052,7 +1052,7 @@ BOOST_FIXTURE_TEST_CASE(ccoins_flush_behavior, FlushTest)
     CCoinsViewDB base{{.path = "test", .cache_bytes = 8_MiB, .memory_only = true}, {}};
     std::vector<std::unique_ptr<CCoinsViewCacheTest>> caches;
     caches.push_back(std::make_unique<CCoinsViewCacheTest>(&base));
-    caches.push_back(std::make_unique<CCoinsViewCacheTest>(caches.back().get()));
+    caches.push_back(std::make_unique<CCoinsViewCacheTest>(caches.back().get()->AsWrite()));
 
     for (const auto& view : caches) {
         TestFlushBehavior(view.get(), base, caches, /*do_erasing_flush=*/false);

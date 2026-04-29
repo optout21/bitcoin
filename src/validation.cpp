@@ -356,7 +356,7 @@ void Chainstate::MaybeUpdateMempoolForReorg(
                 return true;
             }
         } else {
-            const CCoinsViewMemPool view_mempool{&CoinsTip(), *m_mempool};
+            const CCoinsViewMemPool view_mempool{CoinsTip().AsWrite(), *m_mempool};
             const std::optional<LockPoints> new_lock_points{CalculateLockPointsAtTip(m_chain.Tip(), view_mempool, tx)};
             if (new_lock_points.has_value() && CheckSequenceLocksAtTip(m_chain.Tip(), *new_lock_points)) {
                 // Now update the mempool entry lockpoints as well.
@@ -439,7 +439,7 @@ public:
     explicit MemPoolAccept(CTxMemPool& mempool, Chainstate& active_chainstate) :
         m_pool(mempool),
         m_view(&CoinsViewEmpty::Get()),
-        m_viewmempool(&active_chainstate.CoinsTip(), m_pool),
+        m_viewmempool(active_chainstate.CoinsTip().AsWrite(), m_pool),
         m_active_chainstate(active_chainstate)
     {
     }
@@ -1854,7 +1854,7 @@ void CoinsViews::InitCache()
 {
     AssertLockHeld(::cs_main);
     m_cacheview = std::make_unique<CCoinsViewCache>(&m_catcherview);
-    m_connect_block_view = std::make_unique<CoinsViewOverlay>(&*m_cacheview);
+    m_connect_block_view = std::make_unique<CoinsViewOverlay>(m_cacheview->AsWrite());
 }
 
 Chainstate::Chainstate(
@@ -2941,7 +2941,7 @@ bool Chainstate::DisconnectTip(BlockValidationState& state, DisconnectedBlockTra
     // Apply the block atomically to the chain state.
     const auto time_start{SteadyClock::now()};
     {
-        CCoinsViewCache view(&CoinsTip());
+        CCoinsViewCache view(CoinsTip().AsWrite());
         assert(view.GetBestBlock() == pindexDelete->GetBlockHash());
         if (DisconnectBlock(block, pindexDelete, view) != DISCONNECT_OK) {
             LogError("DisconnectTip(): DisconnectBlock %s failed\n", pindexDelete->GetBlockHash().ToString());
@@ -4509,7 +4509,7 @@ BlockValidationState TestBlockValidity(
     index_dummy.pprev = tip;
     index_dummy.nHeight = tip->nHeight + 1;
     index_dummy.phashBlock = &block_hash;
-    CCoinsViewCache view_dummy(&chainstate.CoinsTip());
+    CCoinsViewCache view_dummy(chainstate.CoinsTip().AsWrite());
 
     // Set fJustCheck to true in order to update, and not clear, validation caches.
     if(!chainstate.ConnectBlock(block, state, &index_dummy, view_dummy, /*fJustCheck=*/true)) {

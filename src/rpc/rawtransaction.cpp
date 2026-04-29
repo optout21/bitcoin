@@ -623,6 +623,7 @@ static RPCMethod combinerawtransaction()
     CMutableTransaction mergedTx(txVariants[0]);
 
     // Fetch previous transactions (inputs):
+    // TODO: use CCoinsViewCacheRead
     CCoinsViewCache view{&CoinsViewEmpty::Get()};
     {
         NodeContext& node = EnsureAnyNodeContext(request.context);
@@ -630,7 +631,7 @@ static RPCMethod combinerawtransaction()
         ChainstateManager& chainman = EnsureChainman(node);
         LOCK2(cs_main, mempool.cs);
         CCoinsViewCache &viewChain = chainman.ActiveChainstate().CoinsTip();
-        CCoinsViewMemPool viewMempool(&viewChain, mempool);
+        CCoinsViewMemPool viewMempool(viewChain.AsWrite(), mempool);
         view.SetBackend(viewMempool); // temporarily switch cache backend to db+mempool view
 
         for (const CTxIn& txin : mergedTx.vin) {

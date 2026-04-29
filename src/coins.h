@@ -414,7 +414,7 @@ protected:
 public:
     explicit CCoinsViewBackedReadCacheMutable(CCoinsViewReadCacheMutable* in_view) : base{Assert(in_view)} {}
 
-    void SetBackend(CCoinsViewReadCacheMutable& in_view) { base = &in_view; }
+    virtual void SetBackend(CCoinsViewReadCacheMutable& in_view) { base = &in_view; }
 
     std::optional<Coin> GetCoin(const COutPoint& outpoint) const override { return base->GetCoin(outpoint); }
     std::optional<Coin> PeekCoin(const COutPoint& outpoint) const override { return base->PeekCoin(outpoint); }
@@ -446,10 +446,14 @@ public:
     size_t EstimateSize() const override { return base->EstimateSize(); }
 };
 
+class CCoinsViewCache;
 
 /** CCoinsView that adds a memory cache for transactions to another CCoinsView */
-class CCoinsViewCache : public CCoinsViewBackedWrite
+class CCoinsViewCacheRead : public CCoinsViewBackedReadCacheMutable
 {
+    // Needed to be able to keep FetchCoin private (not protected)
+    friend CCoinsViewCache;
+
 private:
     const bool m_deterministic;
 
@@ -469,30 +473,22 @@ protected:
     /* Running count of dirty Coin cache entries. */
     mutable size_t m_dirty_count{0};
 
-    /**
-     * Discard all modifications made to this cache without flushing to the base view.
-     * This can be used to efficiently reuse a cache instance across multiple operations.
-     */
-    void Reset() noexcept;
-
     /* Fetch the coin from base. Used for cache misses in FetchCoin. */
     virtual std::optional<Coin> FetchCoinFromBase(const COutPoint& outpoint) const;
 
 public:
-    CCoinsViewCache(CCoinsViewWrite* in_base, bool deterministic = false);
+    CCoinsViewCacheRead(CCoinsViewReadCacheMutable* in_base, bool deterministic = false);
 
     /**
      * By deleting the copy constructor, we prevent accidentally using it when one intends to create a cache on top of a base cache.
      */
-    CCoinsViewCache(const CCoinsViewCache &) = delete;
+    CCoinsViewCacheRead(const CCoinsViewCacheRead &) = delete;
 
     // Standard CCoinsView methods
     std::optional<Coin> GetCoin(const COutPoint& outpoint) const override;
     std::optional<Coin> PeekCoin(const COutPoint& outpoint) const override;
     bool HaveCoin(const COutPoint& outpoint) const override;
     uint256 GetBestBlock() const override;
-    void SetBestBlock(const uint256& block_hash);
-    void BatchWrite(CoinsViewCacheCursor& cursor, const uint256& block_hash) override;
     std::unique_ptr<CCoinsViewCursor> Cursor() const override {
         throw std::logic_error("CCoinsViewCache cursor iteration not supported.");
     }
@@ -515,6 +511,71 @@ public:
      * calls to this cache.
      */
     const Coin& AccessCoin(const COutPoint &output) const;
+
+    //! Size of the cache (in number of transaction outputs)
+    unsigned int GetCacheSize() const;
+
+    //! Number of dirty cache entries (transaction outputs)
+    size_t GetDirtyCount() const noexcept { return m_dirty_count; }
+
+    //! Calculate the size of the cache (in bytes)
+    size_t DynamicMemoryUsage() const;
+
+    //! Check whether all prevouts of the transaction are present in the UTXO set represented by this view
+    bool HaveInputs(const CTransaction& tx) const;
+
+    //! Run an internal sanity check on the cache data structure. */
+    void SanityCheck() const;
+
+private:
+    /**
+     * @note this is marked const, but may actually append to `cacheCoins`, increasing
+     * memory usage.
+     */
+    CCoinsMap::iterator FetchCoin(const COutPoint &outpoint) const;
+};
+
+class CCoinsViewCache : public CCoinsViewCacheRead
+{
+protected:
+    CCoinsViewWrite* base_write;
+
+    /**
+     * Discard all modifications made to this cache without flushing to the base view.
+     * This can be used to efficiently reuse a cache instance across multiple operations.
+     */
+    void Reset() noexcept;
+
+public:
+    CCoinsViewCache(CCoinsViewWrite* in_base, bool deterministic = false)
+        :
+        CCoinsViewCacheRead(dynamic_cast<CCoinsViewReadCacheMutable*>(in_base), deterministic),
+        base_write(in_base)
+    {}
+
+    /**
+     * By deleting the copy constructor, we prevent accidentally using it when one intends to create a cache on top of a base cache.
+     */
+    CCoinsViewCache(const CCoinsViewCache &) = delete;
+
+    // Make sure base and base_write are in sync
+    void SetBackend(CCoinsViewReadCacheMutable& in_view) override { throw std::logic_error("CCoinsViewCache::SetBackend(): Use writeable version"); }
+    void SetBackend(CCoinsViewWrite& in_view) {
+        // Make sure base and base_write are in sync
+        base = (CCoinsViewReadCacheMutable*)&in_view;
+        base_write = &in_view;
+    }
+
+    CCoinsViewCacheRead& ReadOnly() { return *dynamic_cast<CCoinsViewCacheRead*>(this); }
+    // Note: Simple type cast can be used insread of this
+    CCoinsViewReadCacheMutable* AsRead() const { return base; }
+    CCoinsViewWrite* AsWrite() const { return base_write; }
+    operator CCoinsViewWrite*() const { return base_write; }
+    operator CCoinsViewWrite&() const { return *base_write; }
+
+    void SetBestBlock(const uint256& block_hash);
+
+    void BatchWrite(CoinsViewCacheCursor& cursor, const uint256& block_hash);
 
     /**
      * Add a coin. Set possible_overwrite to true if an unspent version may
@@ -561,27 +622,12 @@ public:
      */
     void Uncache(const COutPoint &outpoint);
 
-    //! Size of the cache (in number of transaction outputs)
-    unsigned int GetCacheSize() const;
-
-    //! Number of dirty cache entries (transaction outputs)
-    size_t GetDirtyCount() const noexcept { return m_dirty_count; }
-
-    //! Calculate the size of the cache (in bytes)
-    size_t DynamicMemoryUsage() const;
-
-    //! Check whether all prevouts of the transaction are present in the UTXO set represented by this view
-    bool HaveInputs(const CTransaction& tx) const;
-
     //! Force a reallocation of the cache map. This is required when downsizing
     //! the cache because the map's allocator may be hanging onto a lot of
     //! memory despite having called .clear().
     //!
     //! See: https://stackoverflow.com/questions/42114044/how-to-release-unordered-map-memory
     void ReallocateCache();
-
-    //! Run an internal sanity check on the cache data structure. */
-    void SanityCheck() const;
 
     class ResetGuard
     {
@@ -601,13 +647,6 @@ public:
 
     //! Create a scoped guard that will call `Reset()` on this cache when it goes out of scope.
     [[nodiscard]] ResetGuard CreateResetGuard() noexcept { return ResetGuard{*this}; }
-
-private:
-    /**
-     * @note this is marked const, but may actually append to `cacheCoins`, increasing
-     * memory usage.
-     */
-    CCoinsMap::iterator FetchCoin(const COutPoint &outpoint) const;
 };
 
 /**

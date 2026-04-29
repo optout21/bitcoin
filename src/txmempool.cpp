@@ -449,7 +449,7 @@ void CTxMemPool::check(const CCoinsViewCache& active_coins_tip, int64_t spendhei
     assert(!m_txgraph->IsOversized(TxGraph::Level::MAIN));
     m_txgraph->SanityCheck();
 
-    CCoinsViewCache mempoolDuplicate(const_cast<CCoinsViewCache*>(&active_coins_tip));
+    CCoinsViewCache mempoolDuplicate(active_coins_tip.AsWrite());
 
     const auto score_with_topo{GetSortedScoreWithTopology()};
 
