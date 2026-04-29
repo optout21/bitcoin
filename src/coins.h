@@ -249,7 +249,7 @@ private:
  *
  * This is a helper struct to encapsulate the diverging logic between a non-erasing
  * CCoinsViewCache::Sync and an erasing CCoinsViewCache::Flush. This allows the receiver
- * of CCoinsView::BatchWrite to iterate through the flagged entries without knowing
+ * of CCoinsViewWrite::BatchWrite to iterate through the flagged entries without knowing
  * the caller's intent.
  *
  * However, the receiver can still call CoinsViewCacheCursor::WillErase to see if the
@@ -303,26 +303,18 @@ private:
     bool m_will_erase;
 };
 
-/** Pure abstract view on the open txout dataset. */
-class CCoinsView
+/** Pure abstract view on the open txout dataset, read-only. */
+class CCoinsViewReadOnly
 {
 public:
     //! As we use CCoinsViews polymorphically, have a virtual destructor
-    virtual ~CCoinsView() = default;
-
-    //! Retrieve the Coin (unspent transaction output) for a given outpoint.
-    //! May populate the cache. Use PeekCoin() to perform a non-caching lookup.
-    virtual std::optional<Coin> GetCoin(const COutPoint& outpoint) const = 0;
+    virtual ~CCoinsViewReadOnly() = default;
 
     //! Retrieve the Coin (unspent transaction output) for a given outpoint, without caching results.
     //! Does not populate the cache. Use GetCoin() to cache the result.
     virtual std::optional<Coin> PeekCoin(const COutPoint& outpoint) const = 0;
 
-    //! Just check whether a given outpoint is unspent.
-    //! May populate the cache. Use PeekCoin() to perform a non-caching lookup.
-    virtual bool HaveCoin(const COutPoint& outpoint) const = 0;
-
-    //! Retrieve the block hash whose state this CCoinsView currently represents
+    //! Retrieve the block hash whose state this CCoinsViewReadCacheMutable currently represents
     virtual uint256 GetBestBlock() const = 0;
 
     //! Retrieve the range of blocks that may have been only partially written.
@@ -331,10 +323,6 @@ public:
     //! the old block hash, in that order.
     virtual std::vector<uint256> GetHeadBlocks() const = 0;
 
-    //! Do a bulk modification (multiple Coin changes + BestBlock change).
-    //! The passed cursor is used to iterate through the coins.
-    virtual void BatchWrite(CoinsViewCacheCursor& cursor, const uint256& block_hash) = 0;
-
     //! Get a cursor to iterate over the whole state. Implementations may return nullptr.
     virtual std::unique_ptr<CCoinsViewCursor> Cursor() const = 0;
 
@@ -342,8 +330,36 @@ public:
     virtual size_t EstimateSize() const = 0;
 };
 
+/** Pure abstract view on the open txout dataset, read-only view with potential cache mutations. */
+class CCoinsViewReadCacheMutable : public CCoinsViewReadOnly
+{
+public:
+    //! As we use CCoinsViews polymorphically, have a virtual destructor
+    virtual ~CCoinsViewReadCacheMutable() = default;
+
+    //! Retrieve the Coin (unspent transaction output) for a given outpoint.
+    //! May populate the cache. Use PeekCoin() to perform a non-caching lookup.
+    virtual std::optional<Coin> GetCoin(const COutPoint& outpoint) const = 0;
+
+    //! Just check whether a given outpoint is unspent.
+    //! May populate the cache. Use PeekCoin() to perform a non-caching lookup.
+    virtual bool HaveCoin(const COutPoint& outpoint) const = 0;
+};
+
+/** Pure abstract view on the open txout dataset, writeable view. */
+class CCoinsViewWrite : public CCoinsViewReadCacheMutable
+{
+public:
+    //! As we use CCoinsViews polymorphically, have a virtual destructor
+    virtual ~CCoinsViewWrite() = default;
+
+    //! Do a bulk modification (multiple Coin changes + BestBlock change).
+    //! The passed cursor is used to iterate through the coins.
+    virtual void BatchWrite(CoinsViewCacheCursor& cursor, const uint256& block_hash) = 0;
+};
+
 /** Noop coins view. */
-class CoinsViewEmpty : public CCoinsView
+class CoinsViewEmpty : public CCoinsViewWrite
 {
 protected:
     CoinsViewEmpty() = default;
@@ -368,15 +384,15 @@ public:
 };
 
 /** CCoinsView backed by another CCoinsView */
-class CCoinsViewBacked : public CCoinsView
+class CCoinsViewBacked : public CCoinsViewWrite
 {
 protected:
-    CCoinsView* base;
+    CCoinsViewWrite* base;
 
 public:
-    explicit CCoinsViewBacked(CCoinsView* in_view) : base{Assert(in_view)} {}
+    explicit CCoinsViewBacked(CCoinsViewWrite* in_view) : base{Assert(in_view)} {}
 
-    void SetBackend(CCoinsView& in_view) { base = &in_view; }
+    void SetBackend(CCoinsViewWrite& in_view) { base = &in_view; }
 
     std::optional<Coin> GetCoin(const COutPoint& outpoint) const override { return base->GetCoin(outpoint); }
     std::optional<Coin> PeekCoin(const COutPoint& outpoint) const override { return base->PeekCoin(outpoint); }
@@ -421,7 +437,7 @@ protected:
     virtual std::optional<Coin> FetchCoinFromBase(const COutPoint& outpoint) const;
 
 public:
-    CCoinsViewCache(CCoinsView* in_base, bool deterministic = false);
+    CCoinsViewCache(CCoinsViewWrite* in_base, bool deterministic = false);
 
     /**
      * By deleting the copy constructor, we prevent accidentally using it when one intends to create a cache on top of a base cache.
@@ -597,7 +613,7 @@ const Coin& AccessByTxid(const CCoinsViewCache& cache, const Txid& txid);
 class CCoinsViewErrorCatcher final : public CCoinsViewBacked
 {
 public:
-    explicit CCoinsViewErrorCatcher(CCoinsView* view) : CCoinsViewBacked(view) {}
+    explicit CCoinsViewErrorCatcher(CCoinsViewWrite* view) : CCoinsViewBacked(view) {}
 
     void AddReadErrCallback(std::function<void()> f) {
         m_err_callbacks.emplace_back(std::move(f));

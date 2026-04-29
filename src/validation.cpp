@@ -180,7 +180,7 @@ namespace {
  */
 std::optional<std::vector<int>> CalculatePrevHeights(
     const CBlockIndex& tip,
-    const CCoinsView& coins,
+    const CCoinsViewReadCacheMutable& coins,
     const CTransaction& tx)
 {
     std::vector<int> prev_heights;
@@ -201,7 +201,7 @@ std::optional<std::vector<int>> CalculatePrevHeights(
 
 std::optional<LockPoints> CalculateLockPointsAtTip(
     CBlockIndex* tip,
-    const CCoinsView& coins_view,
+    const CCoinsViewReadCacheMutable& coins_view,
     const CTransaction& tx)
 {
     assert(tip);
@@ -4601,7 +4601,7 @@ CVerifyDB::~CVerifyDB()
 VerifyDBResult CVerifyDB::VerifyDB(
     Chainstate& chainstate,
     const Consensus::Params& consensus_params,
-    CCoinsView& coinsview,
+    CCoinsViewWrite& coinsview,
     int nCheckLevel, int nCheckDepth)
 {
     AssertLockHeld(cs_main);
@@ -4764,7 +4764,7 @@ bool Chainstate::ReplayBlocks()
 {
     LOCK(cs_main);
 
-    CCoinsView& db = this->CoinsDB();
+    CCoinsViewWrite& db = this->CoinsDB();
     CCoinsViewCache cache(&db);
 
     std::vector<uint256> hashHeads = db.GetHeadBlocks();

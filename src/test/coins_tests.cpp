@@ -76,7 +76,7 @@ public:
 class CCoinsViewCacheTest : public CCoinsViewCache
 {
 public:
-    explicit CCoinsViewCacheTest(CCoinsView* _base) : CCoinsViewCache(_base) {}
+    explicit CCoinsViewCacheTest(CCoinsViewWrite* _base) : CCoinsViewCache(_base) {}
 
     void SelfTest(bool sanity_check = true) const
     {
@@ -119,7 +119,7 @@ struct CacheTest : BasicTestingSetup {
 // of best block on flush. This is necessary when using CCoinsViewDB as the base,
 // otherwise we'll hit an assertion in BatchWrite.
 //
-void SimulationTest(CCoinsView* base, bool fake_best_block)
+void SimulationTest(CCoinsViewWrite* base, bool fake_best_block)
 {
     // Various coverage trackers.
     bool removed_all_caches = false;
@@ -254,7 +254,7 @@ void SimulationTest(CCoinsView* base, bool fake_best_block)
             }
             if (stack.size() == 0 || (stack.size() < 4 && m_rng.randbool())) {
                 //Add a new cache
-                CCoinsView* tip = base;
+                CCoinsViewWrite* tip = base;
                 if (stack.size() > 0) {
                     tip = stack.back().get();
                 } else {
@@ -507,7 +507,7 @@ BOOST_FIXTURE_TEST_CASE(updatecoins_simulation_test, UpdateTest)
                 stack.pop_back();
             }
             if (stack.size() == 0 || (stack.size() < 4 && m_rng.randbool())) {
-                CCoinsView* tip = &base;
+                CCoinsViewWrite* tip = &base;
                 if (stack.size() > 0) {
                     tip = stack.back().get();
                 }
@@ -652,7 +652,7 @@ static MaybeCoin GetCoinsMapEntry(const CCoinsMap& map, const COutPoint& outp = 
     return MISSING;
 }
 
-static void WriteCoinsViewEntry(CCoinsView& view, const MaybeCoin& cache_coin)
+static void WriteCoinsViewEntry(CCoinsViewWrite& view, const MaybeCoin& cache_coin)
 {
     CoinsCachePair sentinel{};
     sentinel.second.SelfRef(sentinel);

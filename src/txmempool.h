@@ -766,7 +766,7 @@ protected:
     const CTxMemPool& mempool;
 
 public:
-    CCoinsViewMemPool(CCoinsView* baseIn, const CTxMemPool& mempoolIn);
+    CCoinsViewMemPool(CCoinsViewWrite* baseIn, const CTxMemPool& mempoolIn);
     /** GetCoin, returning whether it exists and is not spent. Also updates m_non_base_coins if the
      * coin is not fetched from base. May populate the base view on cache misses. */
     std::optional<Coin> GetCoin(const COutPoint& outpoint) const override;
