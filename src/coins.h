@@ -383,14 +383,56 @@ public:
     size_t EstimateSize() const override { return 0; }
 };
 
-/** CCoinsView backed by another CCoinsView */
-class CCoinsViewBacked : public CCoinsViewWrite
+/** Non-virtual wrapper for CCoinsViewReadOnly * /
+class CCoinsViewBackedReadOnly : public CCoinsViewReadOnly
+{
+protected:
+    CCoinsViewReadOnly* base;
+
+public:
+    explicit CCoinsViewBackedReadOnly(CCoinsViewReadOnly* in_view) : base{Assert(in_view)} {}
+
+    void SetBackend(CCoinsViewReadOnly& in_view) { base = &in_view; }
+
+    std::optional<Coin> PeekCoin(const COutPoint& outpoint) const override { return base->PeekCoin(outpoint); }
+    uint256 GetBestBlock() const override { return base->GetBestBlock(); }
+    std::vector<uint256> GetHeadBlocks() const override { return base->GetHeadBlocks(); }
+    std::unique_ptr<CCoinsViewCursor> Cursor() const override { return base->Cursor(); }
+    size_t EstimateSize() const override { return base->EstimateSize(); }
+};
+*/
+
+/**
+ * Non-virtual wrapper for CCoinsViewReadCacheMutable
+ * Alternative for not using: just include the base and implement the methods.
+ */
+class CCoinsViewBackedReadCacheMutable : public CCoinsViewReadCacheMutable
+{
+protected:
+    CCoinsViewReadCacheMutable* base;
+
+public:
+    explicit CCoinsViewBackedReadCacheMutable(CCoinsViewReadCacheMutable* in_view) : base{Assert(in_view)} {}
+
+    void SetBackend(CCoinsViewReadCacheMutable& in_view) { base = &in_view; }
+
+    std::optional<Coin> GetCoin(const COutPoint& outpoint) const override { return base->GetCoin(outpoint); }
+    std::optional<Coin> PeekCoin(const COutPoint& outpoint) const override { return base->PeekCoin(outpoint); }
+    bool HaveCoin(const COutPoint& outpoint) const override { return base->HaveCoin(outpoint); }
+    uint256 GetBestBlock() const override { return base->GetBestBlock(); }
+    std::vector<uint256> GetHeadBlocks() const override { return base->GetHeadBlocks(); }
+    std::unique_ptr<CCoinsViewCursor> Cursor() const override { return base->Cursor(); }
+    size_t EstimateSize() const override { return base->EstimateSize(); }
+};
+
+/** Non-virtual wrapper for CCoinsViewWrite */
+class CCoinsViewBackedWrite : public CCoinsViewWrite
 {
 protected:
     CCoinsViewWrite* base;
 
 public:
-    explicit CCoinsViewBacked(CCoinsViewWrite* in_view) : base{Assert(in_view)} {}
+    explicit CCoinsViewBackedWrite(CCoinsViewWrite* in_view) : base{Assert(in_view)} {}
 
     void SetBackend(CCoinsViewWrite& in_view) { base = &in_view; }
 
@@ -406,7 +448,7 @@ public:
 
 
 /** CCoinsView that adds a memory cache for transactions to another CCoinsView */
-class CCoinsViewCache : public CCoinsViewBacked
+class CCoinsViewCache : public CCoinsViewBackedWrite
 {
 private:
     const bool m_deterministic;
@@ -610,10 +652,10 @@ const Coin& AccessByTxid(const CCoinsViewCache& cache, const Txid& txid);
  *
  * Writes do not need similar protection, as failure to write is handled by the caller.
 */
-class CCoinsViewErrorCatcher final : public CCoinsViewBacked
+class CCoinsViewErrorCatcher final : public CCoinsViewBackedWrite
 {
 public:
-    explicit CCoinsViewErrorCatcher(CCoinsViewWrite* view) : CCoinsViewBacked(view) {}
+    explicit CCoinsViewErrorCatcher(CCoinsViewWrite* view) : CCoinsViewBackedWrite(view) {}
 
     void AddReadErrCallback(std::function<void()> f) {
         m_err_callbacks.emplace_back(std::move(f));

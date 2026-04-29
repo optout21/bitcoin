@@ -29,7 +29,7 @@ std::optional<Coin> CCoinsViewCache::PeekCoin(const COutPoint& outpoint) const
 }
 
 CCoinsViewCache::CCoinsViewCache(CCoinsViewWrite* in_base, bool deterministic) :
-    CCoinsViewBacked(in_base), m_deterministic(deterministic),
+    CCoinsViewBackedWrite(in_base), m_deterministic(deterministic),
     cacheCoins(0, SaltedOutpointHasher(/*deterministic=*/deterministic), CCoinsMap::key_equal{}, &m_cache_coins_memory_resource)
 {
     m_sentinel.second.SelfRef(m_sentinel);
@@ -393,17 +393,18 @@ static ReturnType ExecuteBackedWrapper(Func func, const std::vector<std::functio
     }
 }
 
+// TODO: Use CCoinsViewBackedReadCacheMutable
 std::optional<Coin> CCoinsViewErrorCatcher::GetCoin(const COutPoint& outpoint) const
 {
-    return ExecuteBackedWrapper<std::optional<Coin>>([&]() { return CCoinsViewBacked::GetCoin(outpoint); }, m_err_callbacks);
+    return ExecuteBackedWrapper<std::optional<Coin>>([&]() { return CCoinsViewBackedWrite::GetCoin(outpoint); }, m_err_callbacks);
 }
 
 bool CCoinsViewErrorCatcher::HaveCoin(const COutPoint& outpoint) const
 {
-    return ExecuteBackedWrapper<bool>([&]() { return CCoinsViewBacked::HaveCoin(outpoint); }, m_err_callbacks);
+    return ExecuteBackedWrapper<bool>([&]() { return CCoinsViewBackedWrite::HaveCoin(outpoint); }, m_err_callbacks);
 }
 
 std::optional<Coin> CCoinsViewErrorCatcher::PeekCoin(const COutPoint& outpoint) const
 {
-    return ExecuteBackedWrapper<std::optional<Coin>>([&]() { return CCoinsViewBacked::PeekCoin(outpoint); }, m_err_callbacks);
+    return ExecuteBackedWrapper<std::optional<Coin>>([&]() { return CCoinsViewBackedWrite::PeekCoin(outpoint); }, m_err_callbacks);
 }

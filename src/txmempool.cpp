@@ -737,7 +737,8 @@ bool CTxMemPool::HasNoInputsOf(const CTransaction &tx) const
     return true;
 }
 
-CCoinsViewMemPool::CCoinsViewMemPool(CCoinsViewWrite* baseIn, const CTxMemPool& mempoolIn) : CCoinsViewBacked(baseIn), mempool(mempoolIn) { }
+// TODO: swtich to CCoinsViewBackedReadCacheMutable
+CCoinsViewMemPool::CCoinsViewMemPool(CCoinsViewWrite* baseIn, const CTxMemPool& mempoolIn) : CCoinsViewBackedWrite(baseIn), mempool(mempoolIn) { }
 
 std::optional<Coin> CCoinsViewMemPool::GetCoin(const COutPoint& outpoint) const
 {
