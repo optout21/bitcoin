@@ -566,6 +566,7 @@ public:
         base_write = &in_view;
     }
 
+    const CCoinsViewCacheRead& ReadOnly() const { return *dynamic_cast<const CCoinsViewCacheRead*>(this); }
     CCoinsViewCacheRead& ReadOnly() { return *dynamic_cast<CCoinsViewCacheRead*>(this); }
     // Note: Simple type cast can be used insread of this
     CCoinsViewReadCacheMutable* AsRead() const { return base; }
