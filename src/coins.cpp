@@ -14,6 +14,14 @@ TRACEPOINT_SEMAPHORE(utxocache, add);
 TRACEPOINT_SEMAPHORE(utxocache, spent);
 TRACEPOINT_SEMAPHORE(utxocache, uncache);
 
+
+void CoinsCacheStats::Log(std::string_view reason) const
+{
+    const double miss_rate = m_total > 0 ? 100.0 * m_miss / m_total : 0.0;
+    LogDebug(BCLog::COINDB, "UTXO cache stats: gets=%d miss=%d (%.2f%%) logreason=%s\n",
+                m_total, m_miss, miss_rate, reason);
+}
+
 CoinsViewEmpty& CoinsViewEmpty::Get()
 {
     static CoinsViewEmpty instance;
@@ -23,14 +31,17 @@ CoinsViewEmpty& CoinsViewEmpty::Get()
 std::optional<Coin> CCoinsViewCache::PeekCoin(const COutPoint& outpoint) const
 {
     if (auto it{cacheCoins.find(outpoint)}; it != cacheCoins.end()) {
+        if (m_log_stats) m_stats.RecordHit();
         return it->second.coin.IsSpent() ? std::nullopt : std::optional{it->second.coin};
     }
+    if (m_log_stats) m_stats.RecordMiss();
     return base->PeekCoin(outpoint);
 }
 
-CCoinsViewCache::CCoinsViewCache(CCoinsView* in_base, bool deterministic) :
+CCoinsViewCache::CCoinsViewCache(CCoinsView* in_base, bool deterministic, bool log_stats) :
     CCoinsViewBacked(in_base), m_deterministic(deterministic),
-    cacheCoins(0, SaltedOutpointHasher(/*deterministic=*/deterministic), CCoinsMap::key_equal{}, &m_cache_coins_memory_resource)
+    cacheCoins(0, SaltedOutpointHasher(/*deterministic=*/deterministic), CCoinsMap::key_equal{}, &m_cache_coins_memory_resource),
+    m_log_stats(log_stats)
 {
     m_sentinel.second.SelfRef(m_sentinel);
 }
@@ -47,6 +58,7 @@ std::optional<Coin> CCoinsViewCache::FetchCoinFromBase(const COutPoint& outpoint
 CCoinsMap::iterator CCoinsViewCache::FetchCoin(const COutPoint &outpoint) const {
     const auto [ret, inserted] = cacheCoins.try_emplace(outpoint);
     if (inserted) {
+        if (m_log_stats) m_stats.RecordMiss();
         if (auto coin{FetchCoinFromBase(outpoint)}) {
             ret->second.coin = std::move(*coin);
             cachedCoinsUsage += ret->second.coin.DynamicMemoryUsage();
@@ -55,6 +67,8 @@ CCoinsMap::iterator CCoinsViewCache::FetchCoin(const COutPoint &outpoint) const 
             cacheCoins.erase(ret);
             return cacheCoins.end();
         }
+    } else {
+        if (m_log_stats) m_stats.RecordHit();
     }
     return ret;
 }
@@ -184,6 +198,7 @@ uint256 CCoinsViewCache::GetBestBlock() const {
 void CCoinsViewCache::SetBestBlock(const uint256& in_block_hash)
 {
     m_block_hash = in_block_hash;
+    if (m_log_stats && ++m_stats.m_block_count % 2016 == 0) m_stats.Log("block period");
 }
 
 void CCoinsViewCache::BatchWrite(CoinsViewCacheCursor& cursor, const uint256& in_block_hash)
@@ -259,6 +274,7 @@ void CCoinsViewCache::BatchWrite(CoinsViewCacheCursor& cursor, const uint256& in
 
 void CCoinsViewCache::Flush(bool reallocate_cache)
 {
+    if (m_log_stats) m_stats.Log("flush");
     auto cursor{CoinsViewCacheCursor(m_dirty_count, m_sentinel, cacheCoins, /*will_erase=*/true)};
     base->BatchWrite(cursor, m_block_hash);
     Assume(m_dirty_count == 0);
@@ -271,6 +287,7 @@ void CCoinsViewCache::Flush(bool reallocate_cache)
 
 void CCoinsViewCache::Sync()
 {
+    if (m_log_stats) m_stats.Log("sync");
     auto cursor{CoinsViewCacheCursor(m_dirty_count, m_sentinel, cacheCoins, /*will_erase=*/false)};
     base->BatchWrite(cursor, m_block_hash);
     Assume(m_dirty_count == 0);
@@ -282,6 +299,7 @@ void CCoinsViewCache::Sync()
 
 void CCoinsViewCache::Reset() noexcept
 {
+    if (m_log_stats) m_stats.Log("reset");
     cacheCoins.clear();
     cachedCoinsUsage = 0;
     m_dirty_count = 0;

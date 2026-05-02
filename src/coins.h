@@ -20,6 +20,7 @@
 
 #include <cassert>
 #include <cstdint>
+#include <string_view>
 
 #include <functional>
 #include <unordered_map>
@@ -389,6 +390,17 @@ public:
 };
 
 
+/** Cache hit statistics for CCoinsViewCache. */
+struct CoinsCacheStats {
+    uint64_t m_total{0}; //!< total access calls
+    uint64_t m_miss{0};  //!< access calls that were missed (item not found in the cache)
+    uint32_t m_block_count{0}; //!< number of SetBestBlock calls (approximates block height)
+
+    void RecordHit() noexcept { ++m_total; }
+    void RecordMiss() noexcept { ++m_total; ++m_miss; }
+    void Log(std::string_view reason) const;
+};
+
 /** CCoinsView that adds a memory cache for transactions to another CCoinsView */
 class CCoinsViewCache : public CCoinsViewBacked
 {
@@ -410,6 +422,8 @@ protected:
     mutable size_t cachedCoinsUsage{0};
     /* Running count of dirty Coin cache entries. */
     mutable size_t m_dirty_count{0};
+    mutable CoinsCacheStats m_stats;
+    const bool m_log_stats;
 
     /**
      * Discard all modifications made to this cache without flushing to the base view.
@@ -421,7 +435,7 @@ protected:
     virtual std::optional<Coin> FetchCoinFromBase(const COutPoint& outpoint) const;
 
 public:
-    CCoinsViewCache(CCoinsView* in_base, bool deterministic = false);
+    CCoinsViewCache(CCoinsView* in_base, bool deterministic = false, bool log_stats = false);
 
     /**
      * By deleting the copy constructor, we prevent accidentally using it when one intends to create a cache on top of a base cache.
