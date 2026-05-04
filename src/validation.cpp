@@ -2464,6 +2464,8 @@ bool Chainstate::ConnectBlock(const CBlock& block, BlockValidationState& state, 
     if (fEnforceBIP30 || pindex->nHeight >= BIP34_IMPLIES_BIP30_LIMIT) {
         for (const auto& tx : block.vtx) {
             for (size_t o = 0; o < tx->vout.size(); o++) {
+                // Note: there the likely case is that the new TXO doesn't exist, so it will
+                // result in a cache miss (a miss for an non-existent item).
                 if (view.HaveCoin(COutPoint(tx->GetHash(), o))) {
                     state.Invalid(BlockValidationResult::BLOCK_CONSENSUS, "bad-txns-BIP30",
                                   "tried to overwrite transaction");
