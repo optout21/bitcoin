@@ -15,11 +15,21 @@ TRACEPOINT_SEMAPHORE(utxocache, spent);
 TRACEPOINT_SEMAPHORE(utxocache, uncache);
 
 
+void CoinsCacheStats::RecordMiss(bool nonexistent) noexcept {
+    ++m_total;
+    if (nonexistent) {
+        ++m_miss_nonexistent;
+    } else {
+        ++m_miss;
+    }
+}
+
 void CoinsCacheStats::Log(std::string_view reason) const
 {
     const double miss_rate = m_total > 0 ? 100.0 * m_miss / m_total : 0.0;
-    LogDebug(BCLog::COINDB, "UTXO cache stats: gets=%d miss=%d (%.2f%%) logreason=%s\n",
-                m_total, m_miss, miss_rate, reason);
+    const double miss_rate_nonxistent = m_total > 0 ? 100.0 * m_miss_nonexistent / m_total : 0.0;
+    LogDebug(BCLog::COINDB, "UTXO cache stats: gets=%d miss=%d (%.2f%%) missNE=%d (%.2f%%) logreason=%s\n",
+                m_total, m_miss, miss_rate, m_miss_nonexistent, miss_rate_nonxistent, reason);
 }
 
 CoinsViewEmpty& CoinsViewEmpty::Get()
@@ -34,8 +44,9 @@ std::optional<Coin> CCoinsViewCache::PeekCoin(const COutPoint& outpoint) const
         if (m_log_stats) m_stats.RecordHit();
         return it->second.coin.IsSpent() ? std::nullopt : std::optional{it->second.coin};
     }
-    if (m_log_stats) m_stats.RecordMiss();
-    return base->PeekCoin(outpoint);
+    const auto ret{base->PeekCoin(outpoint)};
+    m_stats.RecordMiss(!ret);
+    return ret;
 }
 
 CCoinsViewCache::CCoinsViewCache(CCoinsView* in_base, bool deterministic, bool log_stats) :
@@ -58,13 +69,14 @@ std::optional<Coin> CCoinsViewCache::FetchCoinFromBase(const COutPoint& outpoint
 CCoinsMap::iterator CCoinsViewCache::FetchCoin(const COutPoint &outpoint) const {
     const auto [ret, inserted] = cacheCoins.try_emplace(outpoint);
     if (inserted) {
-        if (m_log_stats) m_stats.RecordMiss();
         if (auto coin{FetchCoinFromBase(outpoint)}) {
             ret->second.coin = std::move(*coin);
             cachedCoinsUsage += ret->second.coin.DynamicMemoryUsage();
             Assert(!ret->second.coin.IsSpent());
+            if (m_log_stats) m_stats.RecordMiss(false);
         } else {
             cacheCoins.erase(ret);
+            if (m_log_stats) m_stats.RecordMiss(true);
             return cacheCoins.end();
         }
     } else {

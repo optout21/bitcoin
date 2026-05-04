@@ -390,14 +390,20 @@ public:
 };
 
 
-/** Cache hit statistics for CCoinsViewCache. */
+/**
+ * Cache hit statistics for CCoinsViewCache.
+ * Record separately misses for:
+ * - accesses for existing items, where the item was not found in the cache, but it was found in the DB.
+ * - accesses for non-existing items, checks, where the item was not found in the cache, but neither in the DB.
+ * */
 struct CoinsCacheStats {
-    uint64_t m_total{0}; //!< total access calls
-    uint64_t m_miss{0};  //!< access calls that were missed (item not found in the cache)
+    uint64_t m_total{0};            //!< total access calls
+    uint64_t m_miss{0};             //!< misses for existing items
+    uint64_t m_miss_nonexistent{0}; //!< missed for non-existing items
     uint32_t m_block_count{0}; //!< number of SetBestBlock calls (approximates block height)
 
     void RecordHit() noexcept { ++m_total; }
-    void RecordMiss() noexcept { ++m_total; ++m_miss; }
+    void RecordMiss(bool nonexistent) noexcept;
     void Log(std::string_view reason) const;
 };
 
