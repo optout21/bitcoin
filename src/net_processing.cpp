@@ -908,16 +908,21 @@ private:
 
     /** Update pindexLastCommonBlock and add not-in-flight missing successors to vBlocks, until it has
      *  at most count entries.
+     * vBlock must not contain nullptr
      */
     void FindNextBlocksToDownload(const Peer& peer, unsigned int count, std::vector<const CBlockIndex*>& vBlocks, NodeId& nodeStaller) EXCLUSIVE_LOCKS_REQUIRED(cs_main);
 
-    /** Request blocks for the background chainstate, if one is in use. */
+    /**
+     * Request blocks for the background chainstate, if one is in use.
+     * vBlock must not contain nullptr
+     */
     void TryDownloadingHistoricalBlocks(const Peer& peer, unsigned int count, std::vector<const CBlockIndex*>& vBlocks, const CBlockIndex* from_tip, const CBlockIndex* target_block) EXCLUSIVE_LOCKS_REQUIRED(cs_main);
 
     /**
     * \brief Find next blocks to download from a peer after a starting block.
     *
     * \param vBlocks      Vector of blocks to download which will be appended to.
+    *                     Must not contain nullptr.
     * \param peer         Peer which blocks will be downloaded from.
     * \param state        Pointer to the state of the peer.
     * \param indexWalk    The starting block to add to vBlocks.
@@ -1472,7 +1477,7 @@ void PeerManagerImpl::TryDownloadingHistoricalBlocks(const Peer& peer, unsigned 
 
 void PeerManagerImpl::FindNextBlocks(std::vector<const CBlockIndex*>& vBlocks, const Peer& peer, CNodeState *state, const CBlockIndex& indexWalk, unsigned int count, int nWindowEnd, const CChain* activeChain, NodeId* nodeStaller)
 {
-    std::vector<const CBlockIndex*> vToFetch;
+    std::vector<const CBlockIndex*> vToFetch; // pointers, but never nullptr (cannot use references due to resize)
     int nMaxHeight = std::min<int>(state->pindexBestKnownBlock->nHeight, nWindowEnd + 1);
     bool is_limited_peer = IsLimitedPeer(peer);
     NodeId waitingfor = -1;
@@ -1484,7 +1489,7 @@ void PeerManagerImpl::FindNextBlocks(std::vector<const CBlockIndex*>& vBlocks, c
         int nToFetch = std::min(nMaxHeight - pindexWalk->nHeight, std::max<int>(count - vBlocks.size(), 128));
         vToFetch.resize(nToFetch);
         pindexWalk = state->pindexBestKnownBlock->GetAncestor(pindexWalk->nHeight + nToFetch);
-        vToFetch[nToFetch - 1] = pindexWalk;
+        vToFetch[nToFetch - 1] = Assume(pindexWalk);
         for (unsigned int i = nToFetch - 1; i > 0; i--) {
             vToFetch[i - 1] = vToFetch[i]->pprev;
         }
