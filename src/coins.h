@@ -315,24 +315,15 @@ private:
     bool m_will_erase;
 };
 
-/** Pure abstract view on the open txout dataset. */
-class CCoinsView
+/** Immutable base of CCoinsView */
+class CCoinsViewImmutable
 {
 public:
-    //! As we use CCoinsViews polymorphically, have a virtual destructor
-    virtual ~CCoinsView() = default;
-
-    //! Retrieve the Coin (unspent transaction output) for a given outpoint.
-    //! May populate the cache. Use PeekCoin() to perform a non-caching lookup.
-    virtual std::optional<Coin> GetCoin(const COutPoint& outpoint) const = 0;
+    virtual ~CCoinsViewImmutable() = default;
 
     //! Retrieve the Coin (unspent transaction output) for a given outpoint, without caching results.
     //! Does not populate the cache. Use GetCoin() to cache the result.
     virtual std::optional<Coin> PeekCoin(const COutPoint& outpoint) const = 0;
-
-    //! Just check whether a given outpoint is unspent.
-    //! May populate the cache. Use PeekCoin() to perform a non-caching lookup.
-    virtual bool HaveCoin(const COutPoint& outpoint) const = 0;
 
     //! Retrieve the block hash whose state this CCoinsView currently represents
     virtual uint256 GetBestBlock() const = 0;
@@ -342,6 +333,22 @@ public:
     //! Otherwise, a two-element vector is returned consisting of the new and
     //! the old block hash, in that order.
     virtual std::vector<uint256> GetHeadBlocks() const = 0;
+};
+
+/** Pure abstract view on the open txout dataset. */
+class CCoinsView: public CCoinsViewImmutable
+{
+public:
+    //! As we use CCoinsViews polymorphically, have a virtual destructor
+    virtual ~CCoinsView() = default;
+
+    //! Retrieve the Coin (unspent transaction output) for a given outpoint.
+    //! May populate the cache. Use PeekCoin() to perform a non-caching lookup.
+    virtual std::optional<Coin> GetCoin(const COutPoint& outpoint) const = 0;
+
+    //! Just check whether a given outpoint is unspent.
+    //! May populate the cache. Use PeekCoin() to perform a non-caching lookup.
+    virtual bool HaveCoin(const COutPoint& outpoint) const = 0;
 
     //! Do a bulk modification (multiple Coin changes + BestBlock change).
     //! The passed cursor is used to iterate through the coins.
@@ -389,6 +396,8 @@ public:
     explicit CCoinsViewBacked(CCoinsView* in_view) : base{Assert(in_view)} {}
 
     virtual void SetBackend(CCoinsView& in_view) { base = &in_view; }
+
+    const CCoinsViewImmutable* ImmutableBase() const { return dynamic_cast<CCoinsViewImmutable*>(base); }
 
     std::optional<Coin> GetCoin(const COutPoint& outpoint) const override { return base->GetCoin(outpoint); }
     std::optional<Coin> PeekCoin(const COutPoint& outpoint) const override { return base->PeekCoin(outpoint); }
@@ -659,7 +668,8 @@ private:
         if (i >= m_inputs.size()) return false;
 
         auto& input{m_inputs[i]};
-        input.coin = base->PeekCoin(input.outpoint);
+        // Access base only as immutable
+        input.coin = ImmutableBase()->PeekCoin(input.outpoint);
         // Use release so writing coin above happens before the main thread acquires.
         input.ready.test_and_set(std::memory_order_release);
         input.ready.notify_one();
