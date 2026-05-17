@@ -15,6 +15,7 @@
 #include <span.h>
 #include <tinyformat.h>
 #include <uint256.h>
+#include <util/hasher.h>
 
 #include <cstdint>
 #include <vector>
@@ -233,6 +234,21 @@ static void SipHash13Jumbo_36b(benchmark::Bench& bench)
     });
 }
 
+static void XorHash_36b(benchmark::Bench& bench)
+{
+    FastRandomContext rng{/*fDeterministic=*/true};
+    PresaltedXorHasher presalted_xor_hasher(rng.rand64());
+    auto val{rng.rand256()};
+    uint32_t extra{rng.rand32()};
+    auto i{0U};
+    bench.run([&] {
+        ankerl::nanobench::doNotOptimizeAway(presalted_xor_hasher(val, extra));
+        ++i;
+        val.data()[i % uint256::size()] ^= i & 0xFF;
+        extra += i;
+    });
+}
+
 static void MuHash(benchmark::Bench& bench)
 {
     MuHash3072 acc;
@@ -306,6 +322,7 @@ BENCHMARK(SHA256_32b_SHANI);
 BENCHMARK(SipHash24_32b);
 BENCHMARK(SipHash24_36b);
 BENCHMARK(SipHash13Jumbo_36b);
+BENCHMARK(XorHash_36b);
 BENCHMARK(SHA256D64_1024_STANDARD);
 BENCHMARK(SHA256D64_1024_SSE4);
 BENCHMARK(SHA256D64_1024_AVX2);
