@@ -43,6 +43,11 @@ uint64_t PresaltedXorHasher6x8_2::operator()(const uint256& val, uint32_t extra)
         uint64_t(extra);
 }
 
+uint64_t DummyHasherFirst8Plus::operator()(const uint256& val, uint32_t extra) const noexcept
+{
+    return val.GetUint64(0) + uint64_t(extra);
+}
+
 SaltedOutpointHasher::SaltedOutpointHasher(bool deterministic) : m_hasher{
     deterministic ? 0x8e819f2607a18de6 : FastRandomContext().rand64(),
     deterministic ? 0xf4020d2e3983b0eb : FastRandomContext().rand64(),

@@ -76,6 +76,15 @@ public:
     uint64_t operator()(const uint256& val, uint32_t extra) const noexcept;
 };
 
+/// Dummy non-hash, only for benchmarking: just take the first 8 bytes of the TxId and add the vout.
+class DummyHasherFirst8Plus
+{
+public:
+    explicit DummyHasherFirst8Plus() noexcept = default;
+
+    uint64_t operator()(const uint256& val, uint32_t extra) const noexcept;
+};
+
 class SaltedOutpointHasher
 {
     // const PresaltedSipHasher m_hasher;

@@ -234,6 +234,21 @@ static void XorHasher6x8_2_36b(benchmark::Bench& bench)
     });
 }
 
+static void DummyHasherFirst8Plus_36b(benchmark::Bench& bench)
+{
+    FastRandomContext rng{/*fDeterministic=*/true};
+    DummyHasherFirst8Plus dummy_hasher;
+    auto val{rng.rand256()};
+    uint32_t extra{rng.rand32()};
+    auto i{0U};
+    bench.run([&] {
+        ankerl::nanobench::doNotOptimizeAway(dummy_hasher(val, extra));
+        ++i;
+        val.data()[i % uint256::size()] ^= i & 0xFF;
+        extra += i;
+    });
+}
+
 static void MuHash(benchmark::Bench& bench)
 {
     MuHash3072 acc;
@@ -307,6 +322,7 @@ BENCHMARK(SHA256_32b_SHANI);
 BENCHMARK(SipHash_32b);
 BENCHMARK(XorHasher6x8_1_36b);
 BENCHMARK(XorHasher6x8_2_36b);
+BENCHMARK(DummyHasherFirst8Plus_36b);
 BENCHMARK(SHA256D64_1024_STANDARD);
 BENCHMARK(SHA256D64_1024_SSE4);
 BENCHMARK(SHA256D64_1024_AVX2);
