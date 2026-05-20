@@ -389,7 +389,7 @@ public:
 /** Functions for validating blocks and updating the block tree */
 
 /** Context-independent validity checks */
-bool CheckBlock(const CBlock& block, BlockValidationState& state, const Consensus::Params& consensusParams, bool fCheckPOW = true, bool fCheckMerkleRoot = true);
+[[nodiscard]] BlockValidationState CheckBlock(const CBlock& block, const Consensus::Params& consensusParams, bool fCheckPOW = true, bool fCheckMerkleRoot = true);
 
 /**
  * Verify a block, including transactions.
@@ -964,9 +964,8 @@ private:
      * block index (permanent memory storage), indicating that the header is
      * known to be part of a sufficiently high-work chain (anti-dos check).
      */
-    bool AcceptBlockHeader(
+    [[nodiscard]] BlockValidationState AcceptBlockHeader(
         const CBlockHeader& block,
-        BlockValidationState& state,
         CBlockIndex** ppindex,
         bool min_pow_checked) EXCLUSIVE_LOCKS_REQUIRED(cs_main);
     friend Chainstate;
@@ -1268,11 +1267,12 @@ public:
      *
      * @param[in]  headers The block headers themselves
      * @param[in]  min_pow_checked  True if proof-of-work anti-DoS checks have been done by caller for headers chain
-     * @param[out] state This may be set to an Error state if any error occurred processing them
      * @param[out] ppindex If set, the pointer will be set to point to the last new block index object for the given headers
-     * @returns false if AcceptBlockHeader fails on any of the headers, true otherwise (including if headers were already known)
+     * @returns BlockValidationState indicating the result. IsValid() returns true if all headers
+     *          were accepted. On failure, IsInvalid() is true and the state contains the specific
+     *          validation failure reason.
      */
-    bool ProcessNewBlockHeaders(std::span<const CBlockHeader> headers, bool min_pow_checked, BlockValidationState& state, const CBlockIndex** ppindex = nullptr) LOCKS_EXCLUDED(cs_main);
+    BlockValidationState ProcessNewBlockHeaders(std::span<const CBlockHeader> headers, bool min_pow_checked, const CBlockIndex** ppindex = nullptr) LOCKS_EXCLUDED(cs_main);
 
     /**
      * Sufficiently validate a block for disk storage (and store on disk).
