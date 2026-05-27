@@ -320,7 +320,7 @@ public:
 
     //! Just check whether a given outpoint is unspent.
     //! May populate the cache. Use PeekCoin() to perform a non-caching lookup.
-    virtual bool HaveCoin(const COutPoint& outpoint) const = 0;
+    //virtual bool HaveCoin(const COutPoint& outpoint) const = 0;
 
     //! Retrieve the block hash whose state this CCoinsView currently represents
     virtual uint256 GetBestBlock() const = 0;
@@ -356,7 +356,7 @@ public:
 
     std::optional<Coin> GetCoin(const COutPoint&) const override { return {}; }
     std::optional<Coin> PeekCoin(const COutPoint& outpoint) const override { return GetCoin(outpoint); }
-    bool HaveCoin(const COutPoint& outpoint) const override { return !!GetCoin(outpoint); }
+    // bool HaveCoin(const COutPoint& outpoint) const override { return !!GetCoin(outpoint); }
     uint256 GetBestBlock() const override { return {}; }
     std::vector<uint256> GetHeadBlocks() const override { return {}; }
     void BatchWrite(CoinsViewCacheCursor& cursor, const uint256&) override
@@ -380,7 +380,7 @@ public:
 
     std::optional<Coin> GetCoin(const COutPoint& outpoint) const override { return base->GetCoin(outpoint); }
     std::optional<Coin> PeekCoin(const COutPoint& outpoint) const override { return base->PeekCoin(outpoint); }
-    bool HaveCoin(const COutPoint& outpoint) const override { return base->HaveCoin(outpoint); }
+    // bool HaveCoin(const COutPoint& outpoint) const override { return base->HaveCoin(outpoint); }
     uint256 GetBestBlock() const override { return base->GetBestBlock(); }
     std::vector<uint256> GetHeadBlocks() const override { return base->GetHeadBlocks(); }
     void BatchWrite(CoinsViewCacheCursor& cursor, const uint256& block_hash) override { base->BatchWrite(cursor, block_hash); }
@@ -431,7 +431,7 @@ public:
     // Standard CCoinsView methods
     std::optional<Coin> GetCoin(const COutPoint& outpoint) const override;
     std::optional<Coin> PeekCoin(const COutPoint& outpoint) const override;
-    bool HaveCoin(const COutPoint& outpoint) const override;
+    bool HaveCoin(const COutPoint& outpoint) const;
     uint256 GetBestBlock() const override;
     void SetBestBlock(const uint256& block_hash);
     void BatchWrite(CoinsViewCacheCursor& cursor, const uint256& block_hash) override;
@@ -604,7 +604,7 @@ public:
     }
 
     std::optional<Coin> GetCoin(const COutPoint& outpoint) const override;
-    bool HaveCoin(const COutPoint& outpoint) const override;
+    // bool HaveCoin(const COutPoint& outpoint) const override;
     std::optional<Coin> PeekCoin(const COutPoint& outpoint) const override;
 
 private:
