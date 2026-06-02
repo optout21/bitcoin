@@ -248,6 +248,10 @@ CDBWrapper::CDBWrapper(const DBParams& params)
     leveldb::Status status = leveldb::DB::Open(DBContext().options, fs::PathToString(params.path), &DBContext().pdb);
     HandleError(status);
     LogInfo("Opened LevelDB successfully");
+    // const auto size{0};
+    //const auto size = ApproximateSize();
+    const auto memusage = DynamicMemoryUsage();
+    LogInfo("Mem %ld \n", memusage);
 
     if (params.options.force_compact) {
         LogInfo("Starting database compaction of %s", fs::PathToString(params.path));
