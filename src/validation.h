@@ -316,7 +316,7 @@ bool CheckFinalTxAtTip(const CBlockIndex& active_chain_tip, const CTransaction& 
  */
 std::optional<LockPoints> CalculateLockPointsAtTip(
     CBlockIndex* tip,
-    const CCoinsView& coins_view,
+    const CCoinsViewReadCacheMutable& coins_view,
     const CTransaction& tx);
 
 /**
@@ -443,7 +443,7 @@ public:
     [[nodiscard]] VerifyDBResult VerifyDB(
         Chainstate& chainstate,
         const Consensus::Params& consensus_params,
-        CCoinsView& coinsview,
+        CCoinsViewWrite& coinsview,
         int nCheckLevel,
         int nCheckDepth) EXCLUSIVE_LOCKS_REQUIRED(cs_main);
 };

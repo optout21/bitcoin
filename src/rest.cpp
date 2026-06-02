@@ -1001,7 +1001,7 @@ static bool rest_getutxos(const std::any& context, HTTPRequest* req, const std::
     decltype(chainman.ActiveHeight()) active_height;
     uint256 active_hash;
     {
-        auto process_utxos = [&vOutPoints, &outs, &hits, &active_height, &active_hash, &chainman](const CCoinsView& view, const CTxMemPool* mempool) EXCLUSIVE_LOCKS_REQUIRED(chainman.GetMutex()) {
+        auto process_utxos = [&vOutPoints, &outs, &hits, &active_height, &active_hash, &chainman](const CCoinsViewReadCacheMutable& view, const CTxMemPool* mempool) EXCLUSIVE_LOCKS_REQUIRED(chainman.GetMutex()) {
             for (const COutPoint& vOutPoint : vOutPoints) {
                 auto coin = !mempool || !mempool->isSpent(vOutPoint) ? view.GetCoin(vOutPoint) : std::nullopt;
                 hits.push_back(coin.has_value());
@@ -1017,7 +1017,7 @@ static bool rest_getutxos(const std::any& context, HTTPRequest* req, const std::
             // use db+mempool as cache backend in case user likes to query mempool
             LOCK2(cs_main, mempool->cs);
             CCoinsViewCache& viewChain = chainman.ActiveChainstate().CoinsTip();
-            CCoinsViewMemPool viewMempool(&viewChain, *mempool);
+            CCoinsViewMemPool viewMempool(viewChain.AsWrite(), *mempool);
             process_utxos(viewMempool, mempool);
         } else {
             LOCK(cs_main);
