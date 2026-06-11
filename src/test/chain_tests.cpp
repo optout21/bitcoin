@@ -4,13 +4,82 @@
 
 #include <boost/test/unit_test.hpp>
 
+#include <blockfilter.h>
 #include <chain.h>
 #include <test/util/setup_common.h>
 
 #include <array>
 #include <memory>
+#include <random>
+#include <unordered_set>
+#include <vector>
 
 BOOST_FIXTURE_TEST_SUITE(chain_tests, BasicTestingSetup)
+
+constexpr int id_len{80};
+
+class Block {
+public:
+    std::unordered_set<GCSFilter::Element, ByteVectorHash> elems;
+
+    Block() : elems({}) {}
+
+    //! Create a random ID
+    static GCSFilter::Element CreateRandomElem() {
+        std::mt19937 rng(std::random_device{}());
+        std::vector<unsigned char> id(id_len);
+        for (auto i{0}; i < id_len; ++i) {
+            id[i] = static_cast<uint8_t>(rng() & 0xFF);
+        };
+        return id;
+    }
+
+    //! Create a block with n random elements
+    static Block FillWithRandom(size_t n) {
+        Block b;
+        for (size_t i{0}; i < n; ++i) {
+            b.elems.insert(CreateRandomElem());
+        }
+        return b;
+    }
+};
+
+BOOST_AUTO_TEST_CASE(multi_range_filter_benchmark)
+{
+    constexpr int block_range_size{2016};
+    std::vector<Block> bb(block_range_size);
+    for (auto i{0}; i < block_range_size; ++i) {
+        bb[i] = Block::FillWithRandom(3500 + i/10);
+        //printf("Generated a block\n");
+    }
+    printf("Generated %d blocks\n", block_range_size);
+
+    GCSFilter::Params params;
+    params.m_siphash_k0 = 0x0001020304050607;
+    params.m_siphash_k1 = 0x08090a0b0c0d0e0f;
+    params.m_P = BASIC_FILTER_P;
+    params.m_M = BASIC_FILTER_M;
+
+    uint64_t tot_size{0};
+    for (auto i{0}; i < block_range_size; ++i) {
+        auto filter = GCSFilter(params, bb[i].elems);
+        auto filter_size = filter.GetEncoded().size();
+        printf("filter size %ld\n", filter_size);
+        tot_size += filter_size;
+    }
+    printf("Total filter size %ld (1 filter for each of the %d blocks)\n", tot_size, block_range_size);
+
+    // append all elems into one big
+    std::unordered_set<GCSFilter::Element, ByteVectorHash> range;
+    for (auto i{0}; i < block_range_size; ++i) {
+        for (auto& b : bb[i].elems) {
+            range.insert(b);
+        }
+    }
+    // create filter for the range
+    auto range_filter = GCSFilter(params, range);
+    printf("Range filter size %ld\n", range_filter.GetEncoded().size());
+}
 
 namespace {
 
