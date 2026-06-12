@@ -27,8 +27,9 @@ public:
     //! Create a random ID
     static GCSFilter::Element CreateRandomElem() {
         std::mt19937 rng(std::random_device{}());
-        std::vector<unsigned char> id(id_len);
-        for (auto i{0}; i < id_len; ++i) {
+        size_t len = id_len + (rng() % 10);
+        std::vector<unsigned char> id(len);
+        for (size_t i{0}; i < len; ++i) {
             id[i] = static_cast<uint8_t>(rng() & 0xFF);
         };
         return id;
@@ -47,11 +48,15 @@ public:
 BOOST_AUTO_TEST_CASE(multi_range_filter_benchmark)
 {
     constexpr int block_range_size{2016};
+
     std::vector<Block> bb(block_range_size);
     for (auto i{0}; i < block_range_size; ++i) {
         bb[i] = Block::FillWithRandom(3500 + i/10);
         //printf("Generated a block\n");
+        printf(".");
+        if (i % 64 == 63) printf(" (%d)\n", i);
     }
+    printf("\n");
     printf("Generated %d blocks\n", block_range_size);
 
     GCSFilter::Params params;
@@ -64,7 +69,7 @@ BOOST_AUTO_TEST_CASE(multi_range_filter_benchmark)
     for (auto i{0}; i < block_range_size; ++i) {
         auto filter = GCSFilter(params, bb[i].elems);
         auto filter_size = filter.GetEncoded().size();
-        printf("filter size %ld\n", filter_size);
+        if (i % 128 == 0) printf("filter size %ld\n", filter_size);
         tot_size += filter_size;
     }
     printf("Total filter size %ld (1 filter for each of the %d blocks)\n", tot_size, block_range_size);
@@ -77,8 +82,13 @@ BOOST_AUTO_TEST_CASE(multi_range_filter_benchmark)
         }
     }
     // create filter for the range
+    printf("Creating filter for range ...\n");
     auto range_filter = GCSFilter(params, range);
-    printf("Range filter size %ld\n", range_filter.GetEncoded().size());
+    auto range_filter_size = range_filter.GetEncoded().size();
+    printf("Range filter size %ld\n", range_filter_size);
+
+    auto ratio = 100.0 * range_filter_size / tot_size;
+    printf("Ratio: %lf %%  %lf %%\n", ratio, 100.0 - ratio);
 }
 
 namespace {
