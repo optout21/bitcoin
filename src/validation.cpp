@@ -113,11 +113,22 @@ const std::vector<std::string> CHECKLEVEL_DOC {
  * */
 static constexpr int PRUNE_LOCK_BUFFER{10};
 
+// Max calls till next compaction (linear distribution, average is half)
+static constexpr uint32_t COMPACT_PERIOD{640}; // Roughly every 2 weeks with hourly flushes
+
+// Number of calls until next planned compaction
+static uint32_t g_compact_countdown{FastRandomContext().randrange(COMPACT_PERIOD)};
+
 // Return whether the completed full flush should compact chainstate
 static bool ShouldCompactChainstate(bool in_ibd)
 {
-    static constexpr uint32_t flush_ratio{320}; // Roughly every 2 weeks with hourly flushes
-    return !in_ibd && FastRandomContext().randrange(flush_ratio) == 0;
+    if (in_ibd) return false;
+    if (g_compact_countdown > 0) {
+        --g_compact_countdown;
+        return false;
+    }
+    g_compact_countdown = FastRandomContext().randrange(COMPACT_PERIOD);
+    return true;
 }
 
 TRACEPOINT_SEMAPHORE(validation, block_connected);
