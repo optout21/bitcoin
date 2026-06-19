@@ -4444,9 +4444,12 @@ bool ChainstateManager::AcceptBlock(const std::shared_ptr<const CBlock>& pblock,
     // the block files may be pruned, so we can just call this on one
     // chainstate (particularly if we haven't implemented pruning with
     // background validation yet).
-    ActiveChainstate().FlushStateToDisk(state, FlushStateMode::NONE);
-
+    const bool flush_res = ActiveChainstate().FlushStateToDisk(state, FlushStateMode::NONE);
     CheckBlockIndex();
+
+    if (!flush_res) {
+        return false;
+    }
 
     return true;
 }
