@@ -7,6 +7,7 @@
 #include <arith_uint256.h>
 #include <chain.h>
 #include <consensus/params.h>
+#include <consensus/validation.h>
 #include <crypto/hex_base.h>
 #include <dbwrapper.h>
 #include <flatfile.h>
@@ -950,6 +951,8 @@ void BlockManager::UpdateBlockInfo(const CBlock& block, unsigned int nHeight, co
 
 bool BlockManager::FindUndoPos(BlockValidationState& state, int nFile, FlatFilePos& pos, unsigned int nAddSize)
 {
+    Assert(state.IsValid());
+
     pos.nFile = nFile;
 
     LOCK(cs_LastBlockFile);
@@ -967,11 +970,14 @@ bool BlockManager::FindUndoPos(BlockValidationState& state, int nFile, FlatFileP
         m_check_for_pruning = true;
     }
 
+    Assert(state.IsValid());
     return true;
 }
 
 bool BlockManager::WriteBlockUndo(const CBlockUndo& blockundo, BlockValidationState& state, CBlockIndex& block)
 {
+    Assert(state.IsValid());
+
     AssertLockHeld(::cs_main);
     const BlockfileType type = BlockfileTypeForHeight(block.nHeight);
     auto& cursor = *Assert(WITH_LOCK(cs_LastBlockFile, return m_blockfile_cursors[type]));
@@ -1036,6 +1042,7 @@ bool BlockManager::WriteBlockUndo(const CBlockUndo& blockundo, BlockValidationSt
         m_dirty_blockindex.insert(&block);
     }
 
+    Assert(state.IsValid());
     return true;
 }
 

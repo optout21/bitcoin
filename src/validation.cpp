@@ -2294,6 +2294,8 @@ script_verify_flags GetBlockScriptFlags(const CBlockIndex& block_index, const Ch
 bool Chainstate::ConnectBlock(const CBlock& block, BlockValidationState& state, CBlockIndex* pindex,
                                CCoinsViewCache& view, bool fJustCheck)
 {
+    Assert(state.IsValid());
+
     AssertLockHeld(cs_main);
     assert(pindex);
 
@@ -2667,6 +2669,7 @@ bool Chainstate::ConnectBlock(const CBlock& block, BlockValidationState& state, 
         Ticks<std::chrono::nanoseconds>(time_5 - time_start)
     );
 
+    Assert(state.IsValid());
     return true;
 }
 
@@ -2926,6 +2929,8 @@ void Chainstate::UpdateTip(const CBlockIndex* pindexNew)
   */
 bool Chainstate::DisconnectTip(BlockValidationState& state, DisconnectedBlockTransactions* disconnectpool)
 {
+    Assert(state.IsValid());
+
     AssertLockHeld(cs_main);
     if (m_mempool) AssertLockHeld(m_mempool->cs);
 
@@ -3007,6 +3012,8 @@ bool Chainstate::ConnectTip(
     std::vector<ConnectedBlock>& connected_blocks,
     DisconnectedBlockTransactions& disconnectpool)
 {
+    Assert(state.IsValid());
+
     AssertLockHeld(cs_main);
     if (m_mempool) AssertLockHeld(m_mempool->cs);
 
@@ -3181,6 +3188,8 @@ void Chainstate::PruneBlockIndexCandidates() {
  */
 bool Chainstate::ActivateBestChainStep(BlockValidationState& state, CBlockIndex& index_most_work, const std::shared_ptr<const CBlock>& pblock, bool& fInvalidFound, std::vector<ConnectedBlock>& connected_blocks)
 {
+    Assert(state.IsValid());
+
     AssertLockHeld(cs_main);
     if (m_mempool) AssertLockHeld(m_mempool->cs);
 
@@ -3313,6 +3322,8 @@ static void LimitValidationInterfaceQueue(ValidationSignals& signals) LOCKS_EXCL
 
 bool Chainstate::ActivateBestChain(BlockValidationState& state, std::shared_ptr<const CBlock> pblock)
 {
+    Assert(state.IsValid());
+
     AssertLockNotHeld(m_chainstate_mutex);
 
     // Note that while we're often called here from ProcessNewBlock, this is
@@ -3480,6 +3491,8 @@ bool Chainstate::ActivateBestChain(BlockValidationState& state, std::shared_ptr<
 
 bool Chainstate::PreciousBlock(BlockValidationState& state, CBlockIndex* pindex)
 {
+    state = BlockValidationState{};
+
     AssertLockNotHeld(m_chainstate_mutex);
     AssertLockNotHeld(::cs_main);
     {
@@ -3511,6 +3524,8 @@ bool Chainstate::PreciousBlock(BlockValidationState& state, CBlockIndex* pindex)
 
 bool Chainstate::InvalidateBlock(BlockValidationState& state, CBlockIndex* const pindex)
 {
+    state = BlockValidationState{};
+
     AssertLockNotHeld(m_chainstate_mutex);
     AssertLockNotHeld(::cs_main);
 
@@ -3818,15 +3833,20 @@ void ChainstateManager::ReceivedBlockTransactions(const CBlock& block, CBlockInd
 
 static bool CheckBlockHeader(const CBlockHeader& block, BlockValidationState& state, const Consensus::Params& consensusParams, bool fCheckPOW = true)
 {
+    Assert(state.IsValid());
+
     // Check proof of work matches claimed amount
     if (fCheckPOW && !CheckProofOfWork(block.GetHash(), block.nBits, consensusParams))
         return state.Invalid(BlockValidationResult::BLOCK_INVALID_HEADER, "high-hash", "proof of work failed");
 
+    Assert(state.IsValid());
     return true;
 }
 
 static bool CheckMerkleRoot(const CBlock& block, BlockValidationState& state)
 {
+    Assert(state.IsValid());
+
     if (block.m_checked_merkle_root) return true;
 
     bool mutated;
@@ -3849,6 +3869,7 @@ static bool CheckMerkleRoot(const CBlock& block, BlockValidationState& state)
     }
 
     block.m_checked_merkle_root = true;
+    Assert(state.IsValid());
     return true;
 }
 
@@ -3860,6 +3881,8 @@ static bool CheckMerkleRoot(const CBlock& block, BlockValidationState& state)
  * first transaction needs to have at least one input. */
 static bool CheckWitnessMalleation(const CBlock& block, bool expect_witness_commitment, BlockValidationState& state)
 {
+    Assert(state.IsValid());
+
     if (expect_witness_commitment) {
         if (block.m_checked_witness_commitment) return true;
 
@@ -3889,6 +3912,7 @@ static bool CheckWitnessMalleation(const CBlock& block, bool expect_witness_comm
             }
 
             block.m_checked_witness_commitment = true;
+            Assert(state.IsValid());
             return true;
         }
     }
@@ -3903,15 +3927,20 @@ static bool CheckWitnessMalleation(const CBlock& block, bool expect_witness_comm
         }
     }
 
+    Assert(state.IsValid());
     return true;
 }
 
 bool CheckBlock(const CBlock& block, BlockValidationState& state, const Consensus::Params& consensusParams, bool fCheckPOW, bool fCheckMerkleRoot)
 {
+    Assert(state.IsValid());
+
     // These are checks that are independent of context.
 
-    if (block.fChecked)
+    if (block.fChecked) {
+        Assert(state.IsValid());
         return true;
+    }
 
     // Check that the header is valid (particularly PoW).  This is mostly
     // redundant with the call in AcceptBlockHeader.
@@ -3970,6 +3999,7 @@ bool CheckBlock(const CBlock& block, BlockValidationState& state, const Consensu
     if (fCheckPOW && fCheckMerkleRoot)
         block.fChecked = true;
 
+    Assert(state.IsValid());
     return true;
 }
 
@@ -4070,6 +4100,8 @@ arith_uint256 CalculateClaimedHeadersWork(std::span<const CBlockHeader> headers)
  */
 static bool ContextualCheckBlockHeader(const CBlockHeader& block, BlockValidationState& state, const ChainstateManager& chainman, const CBlockIndex* pindexPrev) EXCLUSIVE_LOCKS_REQUIRED(::cs_main)
 {
+    Assert(state.IsValid());
+
     AssertLockHeld(::cs_main);
     assert(pindexPrev != nullptr);
     const int nHeight = pindexPrev->nHeight + 1;
@@ -4119,6 +4151,8 @@ static bool ContextualCheckBlockHeader(const CBlockHeader& block, BlockValidatio
  */
 static bool ContextualCheckBlock(const CBlock& block, BlockValidationState& state, const ChainstateManager& chainman, const CBlockIndex* pindexPrev)
 {
+    Assert(state.IsValid());
+
     const int nHeight = pindexPrev == nullptr ? 0 : pindexPrev->nHeight + 1;
 
     // Enforce BIP113 (Median Time Past).
@@ -4171,11 +4205,14 @@ static bool ContextualCheckBlock(const CBlock& block, BlockValidationState& stat
         return state.Invalid(BlockValidationResult::BLOCK_CONSENSUS, "bad-blk-weight", strprintf("%s : weight limit failed", __func__));
     }
 
+    Assert(state.IsValid());
     return true;
 }
 
 bool ChainstateManager::AcceptBlockHeader(const CBlockHeader& block, BlockValidationState& state, CBlockIndex** ppindex, bool min_pow_checked)
 {
+    Assert(state.IsValid());
+
     AssertLockHeld(cs_main);
 
     // Check for duplicate
@@ -4192,6 +4229,7 @@ bool ChainstateManager::AcceptBlockHeader(const CBlockHeader& block, BlockValida
                 return state.Invalid(BlockValidationResult::BLOCK_CACHED_INVALID, "duplicate-invalid",
                                      strprintf("block %s was previously marked invalid", hash.ToString()));
             }
+            Assert(state.IsValid());
             return true;
         }
 
@@ -4226,12 +4264,15 @@ bool ChainstateManager::AcceptBlockHeader(const CBlockHeader& block, BlockValida
     if (ppindex)
         *ppindex = pindex;
 
+    Assert(state.IsValid());
     return true;
 }
 
 // Exposed wrapper for AcceptBlockHeader
 bool ChainstateManager::ProcessNewBlockHeaders(std::span<const CBlockHeader> headers, bool min_pow_checked, BlockValidationState& state, const CBlockIndex** ppindex)
 {
+    state = BlockValidationState{};
+
     AssertLockNotHeld(cs_main);
     {
         LOCK(cs_main);
@@ -4257,6 +4298,7 @@ bool ChainstateManager::ProcessNewBlockHeaders(std::span<const CBlockHeader> hea
             LogInfo("Synchronizing blockheaders, height: %d (~%.2f%%)\n", last_accepted.nHeight, progress);
         }
     }
+    Assert(state.IsValid());
     return true;
 }
 
@@ -4288,6 +4330,8 @@ void ChainstateManager::ReportHeadersPresync(int64_t height, int64_t timestamp)
 /** Store block on disk. If dbp is non-nullptr, the file is known to already reside on disk */
 bool ChainstateManager::AcceptBlock(const std::shared_ptr<const CBlock>& pblock, BlockValidationState& state, CBlockIndex** ppindex, bool fRequested, const FlatFilePos* dbp, bool* fNewBlock, bool min_pow_checked)
 {
+    Assert(state.IsValid());
+
     const CBlock& block = *pblock;
 
     if (fNewBlock) *fNewBlock = false;
@@ -4323,6 +4367,7 @@ bool ChainstateManager::AcceptBlock(const std::shared_ptr<const CBlock>& pblock,
 
     // TODO: deal better with return value and error conditions for duplicate
     // and unrequested blocks.
+    Assert(state.IsValid());
     if (fAlreadyHave) return true;
     if (!fRequested) {  // If we didn't ask for it:
         if (pindex->nTx != 0) return true;    // This is a previously-processed block that was pruned
@@ -4344,6 +4389,7 @@ bool ChainstateManager::AcceptBlock(const std::shared_ptr<const CBlock>& pblock,
             ActiveChainstate().InvalidBlockFound(pindex, state);
         }
         LogError("%s: %s\n", __func__, state.ToString());
+        Assert(!state.IsValid());
         return false;
     }
 
@@ -4380,6 +4426,7 @@ bool ChainstateManager::AcceptBlock(const std::shared_ptr<const CBlock>& pblock,
     // chainstate (particularly if we haven't implemented pruning with
     // background validation yet).
     ActiveChainstate().FlushStateToDisk(state, FlushStateMode::NONE);
+    state = BlockValidationState{};
 
     CheckBlockIndex();
 
