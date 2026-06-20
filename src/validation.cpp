@@ -3819,7 +3819,7 @@ void ChainstateManager::ReceivedBlockTransactions(const CBlock& block, CBlockInd
     }
 }
 
-[[nodiscard]] static BlockValidationState CheckBlockHeader(const CBlockHeader& block, const Consensus::Params& consensusParams, bool fCheckPOW = true)
+[[nodiscard]] static const BlockValidationState CheckBlockHeader(const CBlockHeader& block, const Consensus::Params& consensusParams, bool fCheckPOW = true)
 {
     BlockValidationState state;
     // Check proof of work matches claimed amount
@@ -3830,7 +3830,7 @@ void ChainstateManager::ReceivedBlockTransactions(const CBlock& block, CBlockInd
     return state;
 }
 
-[[nodiscard]] static BlockValidationState CheckMerkleRoot(const CBlock& block)
+[[nodiscard]] static const BlockValidationState CheckMerkleRoot(const CBlock& block)
 {
     if (block.m_checked_merkle_root) return BlockValidationState{};
 
@@ -3867,7 +3867,7 @@ void ChainstateManager::ReceivedBlockTransactions(const CBlock& block, CBlockInd
  * Note: If the witness commitment is expected (i.e. `expect_witness_commitment
  * = true`), then the block is required to have at least one transaction and the
  * first transaction needs to have at least one input. */
-static BlockValidationState CheckWitnessMalleation(const CBlock& block, bool expect_witness_commitment)
+static const BlockValidationState CheckWitnessMalleation(const CBlock& block, bool expect_witness_commitment)
 {
     BlockValidationState state;
     if (expect_witness_commitment) {
@@ -4099,7 +4099,7 @@ arith_uint256 CalculateClaimedHeadersWork(std::span<const CBlockHeader> headers)
  *  v0.12 and v0.15 (when no additional protection was in place) whereby an attacker could unboundedly
  *  grow our in-memory block index. See https://bitcoincore.org/en/2024/07/03/disclose-header-spam.
  */
-[[nodiscard]] static BlockValidationState ContextualCheckBlockHeader(const CBlockHeader& block, const ChainstateManager& chainman, const CBlockIndex* pindexPrev) EXCLUSIVE_LOCKS_REQUIRED(::cs_main)
+[[nodiscard]] static const BlockValidationState ContextualCheckBlockHeader(const CBlockHeader& block, const ChainstateManager& chainman, const CBlockIndex* pindexPrev) EXCLUSIVE_LOCKS_REQUIRED(::cs_main)
 {
     AssertLockHeld(::cs_main);
     assert(pindexPrev != nullptr);
@@ -4243,7 +4243,7 @@ BlockValidationState ChainstateManager::AcceptBlockHeader(const CBlockHeader& bl
             return BlockValidationState{};
         }
 
-        if (auto state = CheckBlockHeader(block, GetConsensus()); !state.IsValid()) {
+        if (const auto state = CheckBlockHeader(block, GetConsensus()); !state.IsValid()) {
             LogDebug(BCLog::VALIDATION, "%s: Consensus::CheckBlockHeader: %s, %s\n", __func__, hash.ToString(), state.ToString());
             return state;
         }
@@ -4264,7 +4264,7 @@ BlockValidationState ChainstateManager::AcceptBlockHeader(const CBlockHeader& bl
             /*ret=*/state.Invalid(BlockValidationResult::BLOCK_INVALID_PREV, "bad-prevblk");
             return state;
         }
-        if (auto state = ContextualCheckBlockHeader(block, *this, pindexPrev); !state.IsValid()) {
+        if (const auto state = ContextualCheckBlockHeader(block, *this, pindexPrev); !state.IsValid()) {
             LogDebug(BCLog::VALIDATION, "%s: Consensus::ContextualCheckBlockHeader: %s, %s\n", __func__, hash.ToString(), state.ToString());
             return state;
         }
