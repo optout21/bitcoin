@@ -13,6 +13,7 @@
 #include <random.h>
 #include <tinyformat.h>
 #include <uint256.h>
+#include <util/hasher.h>
 
 #include <cstdint>
 #include <span>
@@ -203,6 +204,51 @@ static void SipHash_32b(benchmark::Bench& bench)
     });
 }
 
+static void XorHasher6x8_1_36b(benchmark::Bench& bench)
+{
+    FastRandomContext rng{/*fDeterministic=*/true};
+    PresaltedXorHasher6x8_1 presalted_xor_hasher(rng.rand64());
+    auto val{rng.rand256()};
+    uint32_t extra{rng.rand32()};
+    auto i{0U};
+    bench.run([&] {
+        ankerl::nanobench::doNotOptimizeAway(presalted_xor_hasher(val, extra));
+        ++i;
+        val.data()[i % uint256::size()] ^= i & 0xFF;
+        extra += i;
+    });
+}
+
+static void XorHasher6x8_2_36b(benchmark::Bench& bench)
+{
+    FastRandomContext rng{/*fDeterministic=*/true};
+    PresaltedXorHasher6x8_2 presalted_xor_hasher(rng.rand64(), rng.rand64(), rng.rand64(), rng.rand64());
+    auto val{rng.rand256()};
+    uint32_t extra{rng.rand32()};
+    auto i{0U};
+    bench.run([&] {
+        ankerl::nanobench::doNotOptimizeAway(presalted_xor_hasher(val, extra));
+        ++i;
+        val.data()[i % uint256::size()] ^= i & 0xFF;
+        extra += i;
+    });
+}
+
+static void DummyHasherFirst8Plus_36b(benchmark::Bench& bench)
+{
+    FastRandomContext rng{/*fDeterministic=*/true};
+    DummyHasherFirst8Plus dummy_hasher;
+    auto val{rng.rand256()};
+    uint32_t extra{rng.rand32()};
+    auto i{0U};
+    bench.run([&] {
+        ankerl::nanobench::doNotOptimizeAway(dummy_hasher(val, extra));
+        ++i;
+        val.data()[i % uint256::size()] ^= i & 0xFF;
+        extra += i;
+    });
+}
+
 static void MuHash(benchmark::Bench& bench)
 {
     MuHash3072 acc;
@@ -274,6 +320,9 @@ BENCHMARK(SHA256_32b_SSE4);
 BENCHMARK(SHA256_32b_AVX2);
 BENCHMARK(SHA256_32b_SHANI);
 BENCHMARK(SipHash_32b);
+BENCHMARK(XorHasher6x8_1_36b);
+BENCHMARK(XorHasher6x8_2_36b);
+BENCHMARK(DummyHasherFirst8Plus_36b);
 BENCHMARK(SHA256D64_1024_STANDARD);
 BENCHMARK(SHA256D64_1024_SSE4);
 BENCHMARK(SHA256D64_1024_AVX2);

@@ -53,9 +53,42 @@ public:
     }
 };
 
+/// XOR's the 8-byte hash, the 4 8-byte TxId parts and the vout together (6 parts, 5 XORs)
+class PresaltedXorHasher6x8_1
+{
+    const uint64_t m_salt;
+
+public:
+    explicit PresaltedXorHasher6x8_1(uint64_t salt) noexcept : m_salt{salt} {}
+
+    uint64_t operator()(const uint256& val, uint32_t extra) const noexcept;
+};
+
+/// XOR's the 4 8-byte TxId parts by a hash, and adds them, together with the vout
+class PresaltedXorHasher6x8_2
+{
+    const uint64_t m_salt0, m_salt1, m_salt2, m_salt3;
+
+public:
+    explicit PresaltedXorHasher6x8_2(uint64_t salt0, uint64_t salt1, uint64_t salt2, uint64_t salt3) noexcept
+        : m_salt0{salt0}, m_salt1{salt1}, m_salt2{salt2}, m_salt3{salt3} {}
+
+    uint64_t operator()(const uint256& val, uint32_t extra) const noexcept;
+};
+
+/// Dummy non-hash, only for benchmarking: just take the first 8 bytes of the TxId and add the vout.
+class DummyHasherFirst8Plus
+{
+public:
+    explicit DummyHasherFirst8Plus() noexcept = default;
+
+    uint64_t operator()(const uint256& val, uint32_t extra) const noexcept;
+};
+
 class SaltedOutpointHasher
 {
-    const PresaltedSipHasher m_hasher;
+    // const PresaltedSipHasher m_hasher;
+    const PresaltedXorHasher6x8_2 m_hasher;
 
 public:
     SaltedOutpointHasher(bool deterministic = false);
