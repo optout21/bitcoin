@@ -17,7 +17,12 @@
 #include <uint256.h>
 #include <util/hasher.h>
 
+#include <algorithm>
+#include <array>
+#include <bit>
+#include <cmath>
 #include <cstdint>
+#include <iostream>
 #include <vector>
 
 /* Number of bytes to hash per iteration */
@@ -249,6 +254,120 @@ static void XorHash_36b(benchmark::Bench& bench)
     });
 }
 
+/*
+ * Avalanche / bit-independence diagnostics for hashers of the form
+ * uint64_t operator()(const uint256& val, uint32_t extra).
+ *
+ * These are not timing benchmarks: they run once (no bench.run() call, see
+ * BenchRunner::RunAll) and print a statistical report instead of a timing
+ * row. They're registered as benchmarks anyway so they're filterable and
+ * discoverable via the usual `bench_bitcoin -filter=` / `-list` machinery.
+ */
+namespace {
+
+constexpr int AVALANCHE_INPUT_BITS = 256 + 32;
+constexpr int AVALANCHE_OUTPUT_BITS = 64;
+constexpr int AVALANCHE_TRIALS = 10000;
+
+struct AvalancheStats {
+    //! Average fraction of output bits that flip when a single input bit is flipped (ideal: 0.5).
+    double mean_flip_fraction;
+    //! Mean, over the full input-bit x output-bit matrix, of |P(output bit flips) - 0.5|.
+    double bic_mean_abs_dev;
+    //! Worst single (input bit, output bit) deviation from 0.5 found in the matrix.
+    double bic_max_abs_dev;
+};
+
+//! Flip bit `bit` (0..287) of the logical 288-bit (val || extra) input.
+void FlipInputBit(uint256& val, uint32_t& extra, int bit)
+{
+    if (bit < 256) {
+        val.data()[bit / 8] ^= (1 << (bit % 8));
+    } else {
+        extra ^= (1u << (bit - 256));
+    }
+}
+
+template <typename HashFn>
+AvalancheStats ComputeAvalancheStats(FastRandomContext& rng, int trials, HashFn&& hash_fn)
+{
+    std::vector<std::array<int, AVALANCHE_OUTPUT_BITS>> flip_counts(AVALANCHE_INPUT_BITS);
+    for (auto& row : flip_counts) row.fill(0);
+    int64_t total_flips{0};
+
+    for (int t = 0; t < trials; ++t) {
+        const uint256 val{rng.rand256()};
+        const uint32_t extra{rng.rand32()};
+        const uint64_t base{hash_fn(val, extra)};
+
+        for (int bit = 0; bit < AVALANCHE_INPUT_BITS; ++bit) {
+            uint256 flipped_val{val};
+            uint32_t flipped_extra{extra};
+            FlipInputBit(flipped_val, flipped_extra, bit);
+
+            const uint64_t diff{base ^ hash_fn(flipped_val, flipped_extra)};
+            total_flips += std::popcount(diff);
+            for (int ob = 0; ob < AVALANCHE_OUTPUT_BITS; ++ob) {
+                if (diff & (uint64_t{1} << ob)) ++flip_counts[bit][ob];
+            }
+        }
+    }
+
+    AvalancheStats stats;
+    stats.mean_flip_fraction = double(total_flips) / (double(trials) * AVALANCHE_INPUT_BITS * AVALANCHE_OUTPUT_BITS);
+
+    double max_dev{0.0};
+    double sum_dev{0.0};
+    for (int bit = 0; bit < AVALANCHE_INPUT_BITS; ++bit) {
+        for (int ob = 0; ob < AVALANCHE_OUTPUT_BITS; ++ob) {
+            const double p{double(flip_counts[bit][ob]) / trials};
+            const double dev{std::abs(p - 0.5)};
+            max_dev = std::max(max_dev, dev);
+            sum_dev += dev;
+        }
+    }
+    stats.bic_mean_abs_dev = sum_dev / (AVALANCHE_INPUT_BITS * AVALANCHE_OUTPUT_BITS);
+    stats.bic_max_abs_dev = max_dev;
+    return stats;
+}
+
+void PrintAvalancheReport(const std::string& name, const AvalancheStats& stats)
+{
+    tfm::format(std::cout,
+                "Avalanche report for %s (%d trials, %d input bits, %d output bits):\n"
+                "  mean output-bit flip fraction per input-bit flip: %.4f (ideal 0.5)\n"
+                "  bit-independence mean |deviation from 0.5|:       %.4f\n"
+                "  bit-independence max  |deviation from 0.5|:       %.4f\n",
+                name, AVALANCHE_TRIALS, AVALANCHE_INPUT_BITS, AVALANCHE_OUTPUT_BITS,
+                stats.mean_flip_fraction, stats.bic_mean_abs_dev, stats.bic_max_abs_dev);
+}
+
+} // namespace
+
+static void Avalanche_SipHash(benchmark::Bench&)
+{
+    FastRandomContext rng{/*fDeterministic=*/true};
+    PresaltedSipHasher hasher(rng.rand64(), rng.rand64());
+    const auto stats{ComputeAvalancheStats(rng, AVALANCHE_TRIALS, [&](const uint256& v, uint32_t e) { return hasher(v, e); })};
+    PrintAvalancheReport("PresaltedSipHasher", stats);
+}
+
+static void Avalanche_JumboHash(benchmark::Bench&)
+{
+    FastRandomContext rng{/*fDeterministic=*/true};
+    PresaltedSipHasher13Jumbo hasher(rng.rand64(), rng.rand64());
+    const auto stats{ComputeAvalancheStats(rng, AVALANCHE_TRIALS, [&](const uint256& v, uint32_t e) { return hasher(v, e); })};
+    PrintAvalancheReport("PresaltedSipHasher13Jumbo", stats);
+}
+
+static void Avalanche_XorHash(benchmark::Bench&)
+{
+    FastRandomContext rng{/*fDeterministic=*/true};
+    PresaltedXorHasher hasher(rng.rand64());
+    const auto stats{ComputeAvalancheStats(rng, AVALANCHE_TRIALS, [&](const uint256& v, uint32_t e) { return hasher(v, e); })};
+    PrintAvalancheReport("PresaltedXorHasher", stats);
+}
+
 static void MuHash(benchmark::Bench& bench)
 {
     MuHash3072 acc;
@@ -323,6 +442,9 @@ BENCHMARK(SipHash24_32b);
 BENCHMARK(SipHash24_36b);
 BENCHMARK(SipHash13Jumbo_36b);
 BENCHMARK(XorHash_36b);
+BENCHMARK(Avalanche_SipHash);
+BENCHMARK(Avalanche_JumboHash);
+BENCHMARK(Avalanche_XorHash);
 BENCHMARK(SHA256D64_1024_STANDARD);
 BENCHMARK(SHA256D64_1024_SSE4);
 BENCHMARK(SHA256D64_1024_AVX2);
