@@ -154,6 +154,8 @@ public:
         const Transaction& tx = GetTxByIndex(txindex);
         return tx.GetOutput(outindex);
     }
+
+    size_t GetTxCount() const { return txs.size(); }
 };
 
 class Blockchain {
@@ -194,6 +196,10 @@ public:
     }
 
     size_t size() const { return blocks.size(); }
+
+    const Block& GetBlock(uint32_t height) const {
+        return blocks[height];
+    }
 };
 
 class UtxoSet {
@@ -318,6 +324,8 @@ public:
     }
 
     size_t size() const { return chain.size(); }
+
+    const Block& GetBlock(uint32_t height) const { return chain.GetBlock(height); }
 };
 
 Transaction::Transaction(const Blockchain& chain, std::vector<Input> inputs, std::vector<Output> outputs) {
@@ -368,6 +376,29 @@ static GCSFilter BuildFilterForBlock(const Block& block)
     return GCSFilter(params, elements);
 }
 
+class BlockRangeFilterBuilder {
+    GCSFilter::ElementSet elements;
+    uint256 blockhash;
+public:
+    BlockRangeFilterBuilder() : blockhash(uint256::ZERO) {}
+    void AddBlock(const Block& block) {
+        if (blockhash == uint256::ZERO) {
+            blockhash = block.blockhash;
+        }
+        for (const auto& script : block.scripts) {
+            elements.insert(script.script);
+        }
+    }
+    GCSFilter Finish() {
+        GCSFilter::Params params;
+        params.m_siphash_k0 = blockhash.GetUint64(0);
+        params.m_siphash_k1 = blockhash.GetUint64(1);
+        params.m_P = BASIC_FILTER_P;
+        params.m_M = BASIC_FILTER_M;
+        return GCSFilter(params, elements);
+    }
+};
+
 // BOOST_AUTO_TEST_CASE(filter_for_one_block)
 // {
 //     const auto block1 = Block::CreateRandom(m_rng);
@@ -383,8 +414,46 @@ BOOST_AUTO_TEST_CASE(whole_blockchain)
 {
     auto manager = BlockChainManager(m_rng, ScriptPool::SCRIPT_POOL_SIZE);
 
-    for (auto i = 0; i < 10'000; ++i) {
+    printf("Creating blocks...\n");
+    //for (auto i = 0; i < 10'000; ++i) {
+    for (auto i = 0; i < 4'000; ++i) {
         manager.AddNewBlock(3'500); // TODO into const
+    }
+
+    // for (size_t i = 0; i < manager.size(); ++i) {
+    //     printf("%ld: txs: %ld\n", i, manager.GetBlock(i).GetTxCount());
+    // }
+
+    {
+        printf("Creating block filters...\n");
+        std::vector<GCSFilter> filters(manager.size());
+        uint64_t total_filter_size = 0;
+        for (size_t i = 0; i < manager.size(); ++i) {
+            const auto filter = BuildFilterForBlock(manager.GetBlock(i));
+            auto filter_size = filter.GetEncoded().size();
+            total_filter_size += filter_size;
+            printf("%ld: filter size: %ld\n", i, filter_size);
+            filters.push_back(filter);
+        }
+        printf("Total filter size: %ld\n", total_filter_size);
+    }
+
+    {
+        const uint32_t block_range_size = 10;
+        printf("Creating block-range filters, range size %d ...\n", block_range_size);
+        uint64_t total_range_filter_size = 0;
+        for (size_t i = 0; i < manager.size(); i += block_range_size) {
+            BlockRangeFilterBuilder builder;
+            for (size_t j = 0; j < block_range_size && i + j < manager.size(); ++j) {
+                builder.AddBlock(manager.GetBlock(i + j));
+            }
+            const auto filter = builder.Finish();
+            auto filter_size = filter.GetEncoded().size();
+            total_range_filter_size += filter_size;
+            printf("%ld: filter size: %ld\n", i, filter_size);
+            //filters.push_back(filter);
+        }
+        printf("Total range filter size: %ld\n", total_range_filter_size);
     }
 
     // printf("scriptpool %ld\n", scriptpool.size());
