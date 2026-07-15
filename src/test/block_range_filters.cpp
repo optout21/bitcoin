@@ -11,6 +11,10 @@
 
 #include <boost/test/unit_test.hpp>
 
+const uint64_t BLOCK_COUNT = 10'000;
+const uint64_t SKIP_BLOCKS = 0;
+const uint64_t TX_PER_BLOCK = 3'000;
+
 BOOST_FIXTURE_TEST_SUITE(block_range_filters, BasicTestingSetup)
 
 typedef std::vector<unsigned char> Script;
@@ -66,6 +70,10 @@ public:
                std::tie(other.block_height, other.tx_index, other.output_index);
     }
 
+    uint64_t GetRoughSize() const {
+        return 4 + 4 + 4;
+    }
+
     void print() const {
         printf("h %d  tx %d  out %d", block_height, tx_index, output_index);
     }
@@ -73,6 +81,10 @@ public:
 
 struct Output {
     Script outscript;
+
+    uint64_t GetRoughSize() const {
+        return 8 + outscript.size();
+    }
 };
 
 class Blockchain;
@@ -84,11 +96,25 @@ class Transaction {
 public:
     Transaction(const Blockchain& chain, std::vector<Input> inputs, std::vector<Output> outputs);
 
-    bool HasOutIndex(uint32_t outindex) const {
+    bool HasOutIndex(uint16_t outindex) const {
         return outindex < outputs.size();
     }
 
-    Output GetOutput(uint32_t outindex) const {
+    // Check if transaction matches a script (input or output)
+    // bool MatchesScript(const Script& script) const;
+
+    uint64_t GetRoughSize() const {
+        uint64_t size = 20;
+        for (const auto& i: inputs) {
+            size += i.GetRoughSize();
+        }
+        for (const auto& o: outputs) {
+            size += o.GetRoughSize();
+        }
+        return size;
+    }
+
+    Output GetOutput(uint16_t outindex) const {
         assert(outindex < outputs.size());
         return this->outputs[outindex];
     }
@@ -98,9 +124,11 @@ public:
 };
 
 struct ScriptUsage {
+    uint16_t txindex;
     bool is_input;
     Script script;
-    ScriptUsage(bool is_input, const Script& script) : is_input(is_input), script(std::move(script)) {}
+    ScriptUsage(uint16_t txindex, bool is_input, const Script& script) :
+        txindex(txindex), is_input(is_input), script(std::move(script)) {}
 };
 
 class Block {
@@ -108,8 +136,10 @@ public:
     uint32_t height;
     uint256 blockhash;
     std::vector<Transaction> txs;
-    //! Redundant
+    //! All scripts in the block txs (input & output). Redundant
     std::vector<ScriptUsage> scripts;
+    //! Total rough size of the block
+    uint64_t total_rough_size;
 
 public:
     static constexpr size_t DEFAULT_SCRIPTS_PER_BLOCK = 4500;
@@ -141,21 +171,34 @@ public:
         blockhash = uint256(hash);
     }
 
-    bool HasTxindex(uint32_t txindex) const {
+    bool HasTxindex(uint16_t txindex) const {
         return txindex < txs.size();
     }
 
-    const Transaction& GetTxByIndex(uint32_t txindex) const {
+    const Transaction& GetTxByIndex(uint16_t txindex) const {
         assert(txindex < txs.size());
         return this->txs[txindex];
     }
 
-    Output GetOutput(uint32_t txindex, uint32_t outindex) const {
+    Output GetOutput(uint16_t txindex, uint16_t outindex) const {
         const Transaction& tx = GetTxByIndex(txindex);
         return tx.GetOutput(outindex);
     }
 
+    // Return all transactions matching a script (input or output)
+    std::vector<Transaction> GetTxsByScript(const Script& script) const {
+        std::vector<Transaction> res;
+        for (const auto& sc: scripts) {
+            if (sc.script == script) {
+                res.emplace_back(GetTxByIndex(sc.txindex));
+            }
+        }
+        return res;
+    }
+
     size_t GetTxCount() const { return txs.size(); }
+
+    uint64_t GetRoughSize() const { return total_rough_size; }
 };
 
 class Blockchain {
@@ -166,10 +209,6 @@ public:
 
     //! construct empty
     Blockchain() {}
-
-    // Blockchain(FastRandomContext& rng, size_t num_blocks = NUM_BLOCKS) {
-    //     // TODO
-    // }
 
     void AddBlock(const Block& block) {
         assert(blocks.size() == block.height);
@@ -189,7 +228,7 @@ public:
         return true;
     }
 
-    Output GetOutput(uint32_t height, uint32_t txindex, uint32_t outindex) const {
+    Output GetOutput(uint32_t height, uint16_t txindex, uint16_t outindex) const {
         assert(height < blocks.size());
         const Block& block = this->blocks[height];
         return block.GetOutput(txindex, outindex);
@@ -246,121 +285,42 @@ public:
     size_t size() const { return vector_of_utxos.size(); }
 };
 
-class BlockChainManager {
-    ScriptPool scriptpool;
-    Blockchain chain;
-    UtxoSet utxos;
-    FastRandomContext& rng;
+// Index of script occurances (input or output) to blocks where they are present
+class ScriptIndex {
+    std::map<Script, std::unordered_set<uint32_t>> index;
 
 public:
-    BlockChainManager(FastRandomContext& rng, size_t scriptpool_size = ScriptPool::SCRIPT_POOL_SIZE) :
-        scriptpool(rng, scriptpool_size), chain(), utxos(),
-        rng(rng)
-    {
-        AddBlock(CreateGenesisBlock());
-    }
- 
-    void AddBlock(Block block)
-    {
-        // printf("Adding block %d (utxos: %ld)...\n", block.height, utxos.size());
-        chain.AddBlock(block);
-        // update UTXOS
-        for (uint32_t txindex = 0; txindex < block.txs.size(); ++txindex) {
-            const auto& tx = block.txs[txindex];
-            // // remove spent -- Done in GenerateTxsForNextBlock
-            // for (const auto& i : tx.GetInputs()) {
-            //     utxos.Remove(i);
-            // }
-            // add new unspent
-            for (uint32_t outindex = 0; outindex < tx.GetOutputs().size(); ++outindex) {
-                utxos.Add(Input{block.height, txindex, outindex});
-            }
+    ScriptIndex() : index() {}
+
+    void Add(const Script& script, uint32_t block_height) {
+        if (index.find(script) == index.end()) {
+            index[script] = std::unordered_set<uint32_t>{};
         }
-        printf("Added block %d with %ld txs, utxos: %ld\n", block.height, block.txs.size(), utxos.size());
+        index[script].insert(block_height);
     }
 
-    Transaction CreateGenesisTx() const {
-        auto script1 = scriptpool.PickWithSkewedProb();
-        return Transaction(chain, {}, {Output{script1}});
+    bool Contains(const Script& script) const {
+        return index.find(script) != index.end();
     }
 
-    Block CreateGenesisBlock() const {
-        auto tx1 = CreateGenesisTx();
-        auto genesis_block = Block(chain, 0, {tx1}, rng);
-        return genesis_block;
-    }
-
-    std::vector<Transaction> GenerateTxsForNextBlock(size_t desired_tx_num)
-    {
-        auto num = std::max(std::min(utxos.size() / 3, desired_tx_num), size_t(1));
-        std::vector<Transaction> txs;
-        txs.reserve(num);
-        txs.emplace_back(CreateGenesisTx());
-        for (size_t i = 0; i < num; ++i) {
-            if (utxos.size() == 0) break;
-            // TODO more flexible input and output count
-            std::vector<Input> inputs;
-            auto numinputs = std::min(size_t(2), utxos.size());
-            for (size_t i = 0; i < numinputs; ++i) {
-                Input inp = utxos.PickAndRemoveRandom(rng);
-                inputs.emplace_back(inp);
-            }
-            std::vector<Output> outputs;
-            auto numoutputs = 2;
-            for (auto i = 0; i < numoutputs; ++i) {
-                outputs.emplace_back(Output{scriptpool.PickWithSkewedProb()});
-            }
-            auto tx = Transaction(chain, inputs, outputs);
-            txs.emplace_back(tx);
+    size_t CountBlocks(const Script& script) const {
+        auto it = index.find(script);
+        if (it == index.end()) {
+            return 0;
         }
-        return txs;
+        return it->second.size();
     }
 
-    void AddNewBlock(size_t desired_tx_num) {
-        auto txs = GenerateTxsForNextBlock(desired_tx_num);
-        auto height = chain.size();
-        auto block = Block(chain, height, txs, rng);
-        AddBlock(block);
+    std::unordered_set<uint32_t> GetBlocks(const Script& script) const {
+        auto it = index.find(script);
+        if (it == index.end()) {
+            return std::unordered_set<uint32_t>{};
+        }
+        return it->second;
     }
 
-    size_t size() const { return chain.size(); }
-
-    const Block& GetBlock(uint32_t height) const { return chain.GetBlock(height); }
+    size_t size() const { return index.size(); }
 };
-
-Transaction::Transaction(const Blockchain& chain, std::vector<Input> inputs, std::vector<Output> outputs) {
-    this->inputs.clear();
-    for (const auto& i : inputs) {
-        if (!chain.HasInput(i)) {
-            printf("Tx::Tx HasInput failed! "); i.print(); printf(" \n");
-        }
-        assert(chain.HasInput(i));
-        this->inputs.emplace_back(i);
-    }
-    this->outputs.clear();
-    for (const auto& o : outputs) {
-        this->outputs.emplace_back(o);
-    }
-}
-
-Block::Block(const Blockchain& chain, uint64_t height, std::vector<Transaction> transactions, FastRandomContext& rng) {
-    this->height = height;
-    SetRandomBlockHash(rng);
-
-    txs = transactions;
-
-    this->scripts.clear();
-    this->scripts.reserve(DEFAULT_SCRIPTS_PER_BLOCK);
-    for (const auto& t : this->txs) {
-        for (const auto& i : t.GetInputs()) {
-            const auto script = chain.GetOutput(i.block_height, i.tx_index, i.output_index);
-            this->scripts.emplace_back(true, script.outscript);
-        }
-        for (const auto& o : t.GetOutputs()) {
-            this->scripts.emplace_back(false, o.outscript);
-        }
-    }
-}
 
 static GCSFilter BuildFilterForBlock(const Block& block)
 {
@@ -399,6 +359,336 @@ public:
     }
 };
 
+struct SimulationResult {
+    uint16_t block_range_size;
+    uint64_t total_filter_size;
+    uint64_t total_dl;
+};
+
+class BlockChainManager {
+    ScriptPool scriptpool;
+    Blockchain chain;
+    UtxoSet utxos;
+    ScriptIndex script_index;
+    // Store block filters here (one per block)
+    std::vector<GCSFilter> block_filters;
+    // Total size for all block filters
+    uint64_t total_block_filter_size;
+    // Store block range filter here, index is block range size (4, 16, ...)
+    std::map<uint16_t, std::vector<GCSFilter>> block_range_filter_sets;
+    FastRandomContext& rng;
+
+public:
+    BlockChainManager(FastRandomContext& rng, size_t scriptpool_size = ScriptPool::SCRIPT_POOL_SIZE) :
+        scriptpool(rng, scriptpool_size), chain(), utxos(), script_index(),
+        rng(rng)
+    {
+        AddBlock(CreateGenesisBlock());
+    }
+ 
+    void AddBlock(Block block)
+    {
+        // printf("Adding block %d (utxos: %ld)...\n", block.height, utxos.size());
+        chain.AddBlock(block);
+        // Update UTXOS and ScriptIndex
+        for (uint16_t txindex = 0; txindex < block.txs.size(); ++txindex) {
+            const auto& tx = block.txs[txindex];
+            for (const auto& i : tx.GetInputs()) {
+                // Utxos remove spent -- Done in GenerateTxsForNextBlock
+                // utxos.Remove(i);
+                const auto spent_script = chain.GetOutput(i.block_height, i.tx_index, i.output_index);
+                script_index.Add(spent_script.outscript, block.height);
+            }
+            // ScriptIndex: inputs: done in GenerateTxsForNextBlock
+            for (uint16_t outindex = 0; outindex < tx.GetOutputs().size(); ++outindex) {
+                // Utxos: add new unspent
+                utxos.Add(Input{block.height, txindex, outindex});
+                // ScriptIndex: add outputs
+                // TODO
+            }
+            // Update ScriptIndex
+        }
+        if (block.height % 50 == 0) {
+            printf("Added block %d with %ld txs, size %ld ; utxos: %ld, scripts: %ld \n",
+                block.height, block.txs.size(), block.GetRoughSize(), utxos.size(), script_index.size());
+        }
+    }
+
+    Transaction CreateGenesisTx() const {
+        auto script1 = scriptpool.PickWithSkewedProb();
+        return Transaction(chain, {}, {Output{script1}});
+    }
+
+    Block CreateGenesisBlock() const {
+        auto tx1 = CreateGenesisTx();
+        auto genesis_block = Block(chain, 0, {tx1}, rng);
+        return genesis_block;
+    }
+
+    std::vector<Transaction> GenerateTxsForNextBlock(size_t desired_tx_num, uint32_t block_height)
+    {
+        auto num = std::max(std::min(utxos.size() / 3, desired_tx_num), size_t(1));
+        std::vector<Transaction> txs;
+        txs.reserve(num);
+        txs.emplace_back(CreateGenesisTx());
+        for (size_t i = 0; i < num; ++i) {
+            if (utxos.size() == 0) break;
+            // TODO more flexible input and output count
+            std::vector<Input> inputs;
+            auto numinputs = std::min(size_t(2), utxos.size());
+            for (size_t i = 0; i < numinputs; ++i) {
+                Input inp = utxos.PickAndRemoveRandom(rng);
+                inputs.emplace_back(inp);
+            }
+            std::vector<Output> outputs;
+            auto numoutputs = 2;
+            for (auto i = 0; i < numoutputs; ++i) {
+                const auto output_script = scriptpool.PickWithSkewedProb();
+                script_index.Add(output_script, block_height);
+                outputs.emplace_back(Output{output_script});
+            }
+            auto tx = Transaction(chain, inputs, outputs);
+            txs.emplace_back(tx);
+        }
+        return txs;
+    }
+
+    void AddNewBlock(size_t desired_tx_num) {
+        auto height = chain.size();
+        auto txs = GenerateTxsForNextBlock(desired_tx_num, height);
+        auto block = Block(chain, height, txs, rng);
+        AddBlock(block);
+    }
+
+    size_t size() const { return chain.size(); }
+
+    const Block& GetBlock(uint32_t height) const { return chain.GetBlock(height); }
+
+    uint64_t BlockFiltersCount() const { return block_filters.size(); }
+
+    uint64_t BlockFiltersTotalSize() const { return total_block_filter_size; }
+
+    void AnalyzeScriptFrequencies() const {
+        const int n = 1000;
+        printf("Analyzing script occurence counts %d ... \n", n);
+        for (auto i = 0; i < n; ++i) {
+            const auto script = scriptpool.PickWithSkewedProb();
+            const auto count = script_index.CountBlocks(script);
+            printf("  c %ld \n", count);
+        }
+    }
+
+    Script PickScriptWithDesiredBlockOccurance(size_t min, size_t max) const {
+        size_t tries = 0;
+        while (tries < 1'000'000) {
+            const auto script = scriptpool.PickWithSkewedProb();
+            const auto count = script_index.CountBlocks(script);
+            if (count >= min && count <= max) {
+                printf("Picked a script with %ld block occurance (%ld -- %ld, %ld tries) \n", count, min, max, tries+1);
+                return script;
+            }
+            ++tries;
+        }
+        assert(false); // not found in time
+        return scriptpool.PickWithSkewedProb(); // fallback
+    }
+
+    void CreateBlockFilters() {
+        total_block_filter_size = 0; // total size for all block filters
+        printf("Creating block filters... (size: %ld) \n", size());
+        block_filters.reserve(size());
+        for (size_t i = SKIP_BLOCKS; i < size(); ++i) {
+            const auto filter = BuildFilterForBlock(GetBlock(i));
+            auto filter_size = filter.GetEncoded().size();
+            total_block_filter_size += filter_size;
+            // printf("%ld: filter size: %ld\n", i, filter_size);
+            block_filters.emplace_back(filter);
+        }
+        printf("Created %ld block filters, total size %ld \n", block_filters.size(), total_block_filter_size);
+    }
+
+    uint64_t CreateBlockRangeFilters(uint16_t block_range_size) {
+        printf("Creating block-range filters, %d (size: %ld) ...\n", block_range_size, size());
+        std::vector<GCSFilter> filters;
+        filters.reserve(1 + size() / block_range_size);
+        uint64_t total_range_filter_size = 0;
+        for (size_t i = SKIP_BLOCKS; i < size(); i += block_range_size) {
+            BlockRangeFilterBuilder builder;
+            for (size_t j = 0; j < block_range_size && i + j < size(); ++j) {
+                builder.AddBlock(GetBlock(i + j));
+            }
+            const auto filter = builder.Finish();
+            auto filter_size = filter.GetEncoded().size();
+            total_range_filter_size += filter_size;
+            // printf("%ld: filter size: %ld\n", i, filter_size);
+            filters.emplace_back(filter);
+        }
+        block_range_filter_sets[block_range_size] = filters;
+
+        printf("Range %d, Created %ld block range filters, total size %ld \n",
+            block_range_size, filters.size(), total_range_filter_size);
+        return total_range_filter_size;
+    }
+
+    SimulationResult RunBlockFilterSimulation(const Script& script) const {
+        printf("Running block filter simulation ... \n");
+        size_t block_filter_matches{0};
+        size_t negative_block_filter_matches{0};
+        size_t total_txs{0};
+        size_t total_dl{0};
+        // Check each block filter
+        for (uint32_t h = SKIP_BLOCKS; h < size(); ++h) {
+            const auto& block_filter = this->block_filters[h];
+            total_dl += block_filter.GetEncoded().size();
+            // printf("h %d \n", h);
+            if (block_filter.Match(script)) {
+                // filter matches, we download & check the block
+                // printf("Block filter height = %d matched!", h);
+                ++block_filter_matches;
+                total_dl += GetBlock(h).GetRoughSize();
+                // Obtain transactions
+                const auto txs = GetBlock(h).GetTxsByScript(script);
+                if (txs.empty()) {
+                    printf("Block filter height = %d matched but negative! \n", h);
+                    ++negative_block_filter_matches;
+                } else {
+                    printf("Block filter height = %d matched (positive, %ld txs)! \n", h, txs.size());
+                }
+                total_txs += txs.size();
+            }
+        }
+        printf("Block filter simulation done, dl_size %ld filter matches %ld  negative %ld pos_blocks %ld pos_txs %ld \n",
+            total_dl, block_filter_matches, negative_block_filter_matches, block_filter_matches - negative_block_filter_matches, total_txs);
+
+        return SimulationResult {
+            .block_range_size = 1,
+            .total_filter_size = total_block_filter_size,
+            .total_dl = total_dl,
+        };
+    }
+
+    SimulationResult RunBlockRangeSimulation(uint16_t block_range_size, const Script& script) const {
+        printf("Running block filter simulation, Range size: %d ... \n", block_range_size);
+        const auto& filters = this->block_range_filter_sets.find(block_range_size)->second;
+        size_t block_range_filter_matches{0};
+        size_t negative_block_range_filter_matches{0};
+        size_t block_filter_matches{0};
+        size_t negative_block_filter_matches{0};
+        size_t total_filters{0};
+        size_t total_txs{0};
+        size_t total_dl{0};
+        // Check each block RANGE filter
+        for (uint32_t h = SKIP_BLOCKS; h < size(); h += block_range_size) {
+            const auto& block_range_filter = filters[h / block_range_size];
+            total_dl += block_range_filter.GetEncoded().size();
+            // printf("h %d \n", h);
+            if (block_range_filter.Match(script)) {
+                // range filter matches, we download & check each block filter
+                // printf("Range block filter height = %d - %d (%d) matched! \n", h, h + block_range_size - 1, h / block_range_size);
+                ++block_range_filter_matches;
+
+                size_t filters2{0};
+                size_t txs2{0};
+                for (uint32_t h2 = h; h2 < h + block_range_size && h2 < size(); ++h2) {
+                    const auto& block_filter = this->block_filters[h2];
+                    total_dl += block_filter.GetEncoded().size();
+                    // printf("h2 %d \n", h2);
+                    if (block_filter.Match(script)) {
+                        // filter matches, we download & check the block
+                        // printf("Block filter height = %d matched!", h);
+                        ++block_filter_matches;
+                        total_dl += GetBlock(h2).GetRoughSize();
+                        // Obtain transactions
+                        const auto txs = GetBlock(h2).GetTxsByScript(script);
+                        if (txs.empty()) {
+                            printf("Block filter height = %d matched but negative! \n", h2);
+                            ++negative_block_filter_matches;
+                        } else {
+                            printf("Block filter height = %d matched (positive, %ld txs)! \n", h2, txs.size());
+                            ++total_filters;
+                            ++filters2;
+                        }
+                        txs2 += txs.size();
+                    }
+
+                    total_dl += GetBlock(h).GetRoughSize();
+                } // h2
+
+                if (txs2 == 0) {
+                    printf("Range block filter height = %d - %d (%d) matched but negative! \n", h, h + block_range_size - 1, h / block_range_size);
+                    ++negative_block_range_filter_matches;
+                } else {
+                    printf("Range block filter height = %d - %d (%d) matched (positive, %ld filters, %ld txs)! \n", h, h + block_range_size - 1, h / block_range_size, filters2, txs2);
+                }
+                total_txs += txs2;
+            }
+        }
+        printf("Block range filter simulation done %d, dl_size %ld range filter matches %ld negative %ld   filter matches %ld negative %ld  pos_txs %ld \n",
+            block_range_size, total_dl, block_range_filter_matches, negative_block_range_filter_matches, block_filter_matches, negative_block_filter_matches, total_txs);
+
+        return SimulationResult {
+            .block_range_size = block_range_size,
+            .total_filter_size = 0, // Not available here
+            .total_dl = 0, // TODO
+        };
+    }
+}; // BlockChainManager
+
+Transaction::Transaction(const Blockchain& chain, std::vector<Input> inputs, std::vector<Output> outputs) {
+    this->inputs.clear();
+    for (const auto& i : inputs) {
+        if (!chain.HasInput(i)) {
+            printf("Tx::Tx HasInput failed! "); i.print(); printf(" \n");
+        }
+        assert(chain.HasInput(i));
+        this->inputs.emplace_back(i);
+    }
+    this->outputs.clear();
+    for (const auto& o : outputs) {
+        this->outputs.emplace_back(o);
+    }
+}
+
+/*
+// Check if transaction matches a script (input or output)
+bool Transaction::MatchesScript(const Script& script) const {
+    for (auto& out: outputs) {
+        if (out.outscript == script) {
+            return true;
+        }
+    }
+    for (auto& in: inputs) {
+        const auto& out = chain.GetOutput(in.block_height, in.tx_index, in.output_index);
+        if (out.outscript == script) {
+            return true;
+        }
+    }
+    return false;
+}
+*/
+
+Block::Block(const Blockchain& chain, uint64_t height, std::vector<Transaction> transactions, FastRandomContext& rng) {
+    this->height = height;
+    SetRandomBlockHash(rng);
+
+    txs = transactions;
+    this->total_rough_size = 0;
+
+    this->scripts.clear();
+    this->scripts.reserve(DEFAULT_SCRIPTS_PER_BLOCK);
+    for (size_t ti = 0; ti < this->txs.size(); ++ti) {
+        const auto& tx = this->txs[ti];
+        for (const auto& i : tx.GetInputs()) {
+            const auto script = chain.GetOutput(i.block_height, i.tx_index, i.output_index);
+            this->scripts.emplace_back(ti, true, script.outscript);
+        }
+        for (const auto& o : tx.GetOutputs()) {
+            this->scripts.emplace_back(ti, false, o.outscript);
+        }
+        this->total_rough_size += tx.GetRoughSize();
+    }
+}
+
 // BOOST_AUTO_TEST_CASE(filter_for_one_block)
 // {
 //     const auto block1 = Block::CreateRandom(m_rng);
@@ -415,45 +705,52 @@ BOOST_AUTO_TEST_CASE(whole_blockchain)
     auto manager = BlockChainManager(m_rng, ScriptPool::SCRIPT_POOL_SIZE);
 
     printf("Creating blocks...\n");
-    //for (auto i = 0; i < 10'000; ++i) {
-    for (auto i = 0; i < 4'000; ++i) {
-        manager.AddNewBlock(3'500); // TODO into const
+    for (uint64_t i = 0; i < BLOCK_COUNT; ++i) {
+        manager.AddNewBlock(TX_PER_BLOCK);
     }
 
-    // for (size_t i = 0; i < manager.size(); ++i) {
-    //     printf("%ld: txs: %ld\n", i, manager.GetBlock(i).GetTxCount());
-    // }
+    // manager.AnalyzeScriptFrequencies();
 
-    {
-        printf("Creating block filters...\n");
-        std::vector<GCSFilter> filters(manager.size());
-        uint64_t total_filter_size = 0;
-        for (size_t i = 0; i < manager.size(); ++i) {
-            const auto filter = BuildFilterForBlock(manager.GetBlock(i));
-            auto filter_size = filter.GetEncoded().size();
-            total_filter_size += filter_size;
-            printf("%ld: filter size: %ld\n", i, filter_size);
-            filters.push_back(filter);
-        }
-        printf("Total filter size: %ld\n", total_filter_size);
+    // Script dummy_script = manager.PickScriptWithDesiredBlockOccurance(1, 10);
+
+    manager.CreateBlockFilters();
+    printf("Result Range 1 Count %ld Total filter size: %ld\n", manager.BlockFiltersCount(), manager.BlockFiltersTotalSize());
+
+    std::vector<uint16_t> block_range_sizes{4, 16, 64, 256, 1024, 2016};
+
+    for (auto block_range_size: block_range_sizes) {
+        auto total_size = manager.CreateBlockRangeFilters(block_range_size);
+        double ratio = 100.0 * (double)total_size / (double)manager.BlockFiltersTotalSize();
+        printf("Result Range %d Total range filter size: %ld Ratio: %g \n",
+            block_range_size, total_size, ratio);
     }
 
-    {
-        const uint32_t block_range_size = 10;
-        printf("Creating block-range filters, range size %d ...\n", block_range_size);
-        uint64_t total_range_filter_size = 0;
-        for (size_t i = 0; i < manager.size(); i += block_range_size) {
-            BlockRangeFilterBuilder builder;
-            for (size_t j = 0; j < block_range_size && i + j < manager.size(); ++j) {
-                builder.AddBlock(manager.GetBlock(i + j));
-            }
-            const auto filter = builder.Finish();
-            auto filter_size = filter.GetEncoded().size();
-            total_range_filter_size += filter_size;
-            printf("%ld: filter size: %ld\n", i, filter_size);
-            //filters.push_back(filter);
+    std::vector<Script> scripts3;
+    for (auto i = 0; i < 6; ++i) {
+        scripts3.emplace_back(manager.PickScriptWithDesiredBlockOccurance(3, 6));
+    }
+
+    for (const auto& script: scripts3) {
+        auto result1 = manager.RunBlockFilterSimulation(script);
+    }
+    for (auto block_range_size: block_range_sizes) {
+        for (const auto& script: scripts3) {
+            auto result = manager.RunBlockRangeSimulation(block_range_size, script);
         }
-        printf("Total range filter size: %ld\n", total_range_filter_size);
+    }
+
+    std::vector<Script> scripts20;
+    for (auto i = 0; i < 6; ++i) {
+        scripts20.emplace_back(manager.PickScriptWithDesiredBlockOccurance(20, 30));
+    }
+
+    for (const auto& script: scripts20) {
+        auto result1 = manager.RunBlockFilterSimulation(script);
+    }
+    for (auto block_range_size: block_range_sizes) {
+        for (const auto& script: scripts20) {
+            auto result = manager.RunBlockRangeSimulation(block_range_size, script);
+        }
     }
 
     // printf("scriptpool %ld\n", scriptpool.size());
@@ -463,3 +760,4 @@ BOOST_AUTO_TEST_CASE(whole_blockchain)
 }
 
 BOOST_AUTO_TEST_SUITE_END()
+
