@@ -1484,7 +1484,9 @@ public:
         std::fill_n(tx_deps.begin(), m_tx_data.size(), TxIdx{0});
         /** A heap with all transactions within the current chunk that can be included, sorted by
          *  tx feerate (high to low), tx size (small to large), and fallback order. */
-        std::vector<TxIdx> ready_tx;
+        std::array<TxIdx, SetType::Size()> ready_tx;
+        /** The number of entries of ready_tx in use. */
+        unsigned num_ready_tx{0};
         // Populate chunk_deps and tx_deps.
         unsigned num_deps{0};
         for (TxIdx chl_idx : m_transaction_idxs) {
@@ -1565,19 +1567,19 @@ public:
             Assume(chunk_deps[chunk_idx] == 0);
             const auto& chunk_txn = m_set_info[chunk_idx].transactions;
             // Build heap of all includable transactions in chunk.
-            Assume(ready_tx.empty());
+            Assume(num_ready_tx == 0);
             for (TxIdx tx_idx : chunk_txn) {
-                if (tx_deps[tx_idx] == 0) ready_tx.push_back(tx_idx);
+                if (tx_deps[tx_idx] == 0) ready_tx[num_ready_tx++] = tx_idx;
             }
-            Assume(!ready_tx.empty());
-            std::make_heap(ready_tx.begin(), ready_tx.end(), tx_cmp_fn);
+            Assume(num_ready_tx > 0);
+            std::make_heap(ready_tx.begin(), ready_tx.begin() + num_ready_tx, tx_cmp_fn);
             // Pick transactions from the ready heap, append them to linearization, and decrement
             // dependency counts.
-            while (!ready_tx.empty()) {
+            while (num_ready_tx > 0) {
                 // Pop an element from the tx_ready heap.
                 auto tx_idx = ready_tx.front();
-                std::pop_heap(ready_tx.begin(), ready_tx.end(), tx_cmp_fn);
-                ready_tx.pop_back();
+                std::pop_heap(ready_tx.begin(), ready_tx.begin() + num_ready_tx, tx_cmp_fn);
+                --num_ready_tx;
                 // Append to linearization.
                 ret.push_back(tx_idx);
                 // Decrement dependency counts.
@@ -1588,8 +1590,8 @@ public:
                     Assume(tx_deps[chl_idx] > 0);
                     if (--tx_deps[chl_idx] == 0 && chunk_txn[chl_idx]) {
                         // Child tx has no dependencies left, and is in this chunk. Add it to the tx heap.
-                        ready_tx.push_back(chl_idx);
-                        std::push_heap(ready_tx.begin(), ready_tx.end(), tx_cmp_fn);
+                        ready_tx[num_ready_tx++] = chl_idx;
+                        std::push_heap(ready_tx.begin(), ready_tx.begin() + num_ready_tx, tx_cmp_fn);
                     }
                     // Decrement chunk dependency count if this is out-of-chunk dependency.
                     if (chl_data.chunk_idx != chunk_idx) {
