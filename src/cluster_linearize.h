@@ -1471,7 +1471,9 @@ public:
         /** A heap with all chunks (by set index) that can currently be included, sorted by
          *  chunk feerate (high to low), chunk size (small to large), and by least maximum element
          *  according to the fallback order (which is the second pair element). */
-        std::vector<std::pair<SetIdx, TxIdx>> ready_chunks;
+        std::array<std::pair<SetIdx, TxIdx>, SetType::Size()> ready_chunks;
+        /** The number of entries of ready_chunks in use. */
+        unsigned num_ready_chunks{0};
         /** For every chunk, indexed by SetIdx, the number of unmet dependencies the chunk has on
          *  other chunks (not including dependencies within the chunk itself). */
         std::vector<TxIdx> chunk_deps(m_set_info.size(), 0);
@@ -1549,15 +1551,15 @@ public:
         // Construct a heap with all chunks that have no out-of-chunk dependencies.
         for (SetIdx chunk_idx : m_chunk_idxs) {
             if (chunk_deps[chunk_idx] == 0) {
-                ready_chunks.emplace_back(chunk_idx, max_fallback_fn(chunk_idx));
+                ready_chunks[num_ready_chunks++] = {chunk_idx, max_fallback_fn(chunk_idx)};
             }
         }
-        std::make_heap(ready_chunks.begin(), ready_chunks.end(), chunk_cmp_fn);
+        std::make_heap(ready_chunks.begin(), ready_chunks.begin() + num_ready_chunks, chunk_cmp_fn);
         // Pop chunks off the heap.
-        while (!ready_chunks.empty()) {
+        while (num_ready_chunks > 0) {
             auto [chunk_idx, _rnd] = ready_chunks.front();
-            std::pop_heap(ready_chunks.begin(), ready_chunks.end(), chunk_cmp_fn);
-            ready_chunks.pop_back();
+            std::pop_heap(ready_chunks.begin(), ready_chunks.begin() + num_ready_chunks, chunk_cmp_fn);
+            --num_ready_chunks;
             Assume(chunk_deps[chunk_idx] == 0);
             const auto& chunk_txn = m_set_info[chunk_idx].transactions;
             // Build heap of all includable transactions in chunk.
@@ -1592,8 +1594,8 @@ public:
                         Assume(chunk_deps[chl_data.chunk_idx] > 0);
                         if (--chunk_deps[chl_data.chunk_idx] == 0) {
                             // Child chunk has no dependencies left. Add it to the chunk heap.
-                            ready_chunks.emplace_back(chl_data.chunk_idx, max_fallback_fn(chl_data.chunk_idx));
-                            std::push_heap(ready_chunks.begin(), ready_chunks.end(), chunk_cmp_fn);
+                            ready_chunks[num_ready_chunks++] = {chl_data.chunk_idx, max_fallback_fn(chl_data.chunk_idx)};
+                            std::push_heap(ready_chunks.begin(), ready_chunks.begin() + num_ready_chunks, chunk_cmp_fn);
                         }
                     }
                 }
