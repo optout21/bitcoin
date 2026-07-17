@@ -1476,7 +1476,8 @@ public:
         unsigned num_ready_chunks{0};
         /** For every chunk, indexed by SetIdx, the number of unmet dependencies the chunk has on
          *  other chunks (not including dependencies within the chunk itself). */
-        std::vector<TxIdx> chunk_deps(m_set_info.size(), 0);
+        std::array<TxIdx, SetType::Size()> chunk_deps;
+        std::fill_n(chunk_deps.begin(), m_set_info.size(), TxIdx{0});
         /** For every transaction, indexed by TxIdx, the number of unmet dependencies the
          *  transaction has. */
         std::vector<TxIdx> tx_deps(m_tx_data.size(), 0);
