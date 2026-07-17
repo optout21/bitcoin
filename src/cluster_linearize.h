@@ -1480,7 +1480,8 @@ public:
         std::fill_n(chunk_deps.begin(), m_set_info.size(), TxIdx{0});
         /** For every transaction, indexed by TxIdx, the number of unmet dependencies the
          *  transaction has. */
-        std::vector<TxIdx> tx_deps(m_tx_data.size(), 0);
+        std::array<TxIdx, SetType::Size()> tx_deps;
+        std::fill_n(tx_deps.begin(), m_tx_data.size(), TxIdx{0});
         /** A heap with all transactions within the current chunk that can be included, sorted by
          *  tx feerate (high to low), tx size (small to large), and fallback order. */
         std::vector<TxIdx> ready_tx;
