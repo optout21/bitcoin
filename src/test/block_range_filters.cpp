@@ -12,12 +12,13 @@
 
 #include <cassert>
 #include <fstream>
+#include <optional>
 #include <tuple>
 
 #include <boost/test/unit_test.hpp>
 
 // const uint64_t BLOCK_COUNT = 20'000;
-const uint64_t BLOCK_COUNT = 10'000;
+const uint64_t BLOCK_COUNT = 5'000;
 const uint64_t SKIP_BLOCKS = 0;
 const uint64_t TX_PER_BLOCK = 3'000;
 const uint8_t HEADER_SIZE = 22;
@@ -699,14 +700,13 @@ public:
     }
 
     void BuildScriptIndex() {
-        printf("Building script index...\n");
+        printf("Building script index (using chain from file)...\n");
         script_index = ScriptIndex{};
-        for (uint32_t h = 0; h < chain.size(); ++h) {
-            const auto& block = chain.GetBlock(h);
+        ForEachBlock([this](const Block& block) {
             for (const auto& sc : block.scripts) {
-                script_index.Add(sc.script_idx, h);
+                script_index.Add(sc.script_idx, block.height);
             }
-        }
+        });
         printf("Script index built: %ld entries\n", script_index.size());
     }
 
@@ -785,6 +785,21 @@ public:
         return scriptpool.PickIndexWithSkewedProb(); // fallback
     }
 
+    //! Read blocks sequentially from the chain file, calling fn(block) for each.
+    template<typename Fn>
+    void ForEachBlock(Fn&& fn) const {
+        std::ifstream f(CHAIN_CACHE, std::ios::binary);
+        if (!f) { printf("ForEachBlock: cannot open %s\n", CHAIN_CACHE); return; }
+        uint32_t n;
+        f.read(reinterpret_cast<char*>(&n), sizeof(n));
+        if (!f) return;
+        for (uint32_t i = 0; i < n; ++i) {
+            Block block = Block::ReadFrom(f);
+            if (!f) break;
+            fn(block);
+        }
+    }
+
 }; // BlockChainManager
 
 class FilterManager {
@@ -803,37 +818,44 @@ public:
 
     void CreateBlockFilters() {
         total_block_filter_size = 0;
-        printf("Creating block filters... (size: %ld) \n", chain_mgr.size());
-        block_filters.reserve(chain_mgr.size());
-        for (size_t i = SKIP_BLOCKS; i < chain_mgr.size(); ++i) {
-            const auto filter = BuildFilterForBlock(chain_mgr.GetBlock(i), chain_mgr.GetScriptPool());
-            auto filter_size = filter.GetEncoded().size();
-            total_block_filter_size += filter_size;
-            // printf("%ld: filter size: %ld\n", i, filter_size);
+        printf("Creating block filters (using chain from file)...\n");
+        chain_mgr.ForEachBlock([this](const Block& block) {
+            if (block.height < SKIP_BLOCKS) return;
+            const auto filter = BuildFilterForBlock(block, chain_mgr.GetScriptPool());
+            total_block_filter_size += filter.GetEncoded().size();
             block_filters.emplace_back(filter);
-        }
+        });
         printf("Created %ld block filters, total size %ld \n", block_filters.size(), total_block_filter_size);
     }
 
     uint64_t CreateBlockRangeFilters(uint16_t block_range_size) {
-        printf("Creating block-range filters, %d (size: %ld) ...\n", block_range_size, chain_mgr.size());
+        printf("Creating block-range filters, %d (using chain from file) ...\n", block_range_size);
         std::vector<GCSFilter> filters;
-        filters.reserve(1 + chain_mgr.size() / block_range_size);
         uint64_t total_range_filter_size = 0;
-        for (size_t i = SKIP_BLOCKS; i < chain_mgr.size(); i += block_range_size) {
-            BlockRangeFilterBuilder builder(chain_mgr.GetScriptPool());
-            for (size_t j = 0; j < block_range_size && i + j < chain_mgr.size(); ++j) {
-                builder.AddBlock(chain_mgr.GetBlock(i + j));
-            }
-            const auto filter = builder.Finish();
-            auto filter_size = filter.GetEncoded().size();
-            total_range_filter_size += filter_size;
-            // printf("%ld: filter size: %ld\n", i, filter_size);
+
+        std::optional<BlockRangeFilterBuilder> builder;
+        uint32_t count_in_range = 0;
+
+        auto finalize_range = [&]() {
+            if (!builder) return;
+            const auto filter = builder->Finish();
+            total_range_filter_size += filter.GetEncoded().size();
             filters.emplace_back(filter);
-        }
-        block_range_filter_sets[block_range_size] = filters;
+            builder.reset();
+            count_in_range = 0;
+        };
+
+        chain_mgr.ForEachBlock([&](const Block& block) {
+            if (block.height < SKIP_BLOCKS) return;
+            if (!builder) builder.emplace(chain_mgr.GetScriptPool());
+            builder->AddBlock(block);
+            if (++count_in_range == block_range_size) finalize_range();
+        });
+        finalize_range(); // flush any partial final range
+
+        block_range_filter_sets[block_range_size] = std::move(filters);
         printf("Range %d, Created %ld block range filters, total size %ld \n",
-            block_range_size, filters.size(), total_range_filter_size);
+            block_range_size, block_range_filter_sets[block_range_size].size(), total_range_filter_size);
         return total_range_filter_size;
     }
 
