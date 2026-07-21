@@ -32,7 +32,7 @@ static Script RandomScript(FastRandomContext& rng) {
     return rng.randbytes(len);
 }
 
-typedef size_t ScriptIdx;
+typedef uint32_t ScriptIdx;
 
 class ScriptPool {
     std::vector<Script> scripts;
@@ -81,7 +81,7 @@ public:
         return true;
     }
 
-    const Script& GetScript(size_t index) const {
+    const Script& GetScript(ScriptIdx index) const {
         assert(index < this->scripts.size());
         return this->scripts[index];
     }
@@ -140,21 +140,21 @@ class Blockchain;
 class Transaction {
     std::vector<Input> inputs;
     std::vector<Output> outputs;
-    uint64_t rough_size;
+    uint32_t rough_size;
 
 public:
     Transaction(const Blockchain& chain, const ScriptPool& scriptpool, std::vector<Input> inputs, std::vector<Output> outputs);
 
-    bool HasOutIndex(uint16_t outindex) const {
+    bool HasOutIndex(uint8_t outindex) const {
         return outindex < outputs.size();
     }
 
     // Check if transaction matches a script (input or output)
     // bool MatchesScript(const Script& script) const;
 
-    uint64_t GetRoughSize() const { return rough_size; }
+    uint32_t GetRoughSize() const { return rough_size; }
 
-    Output GetOutput(uint16_t outindex) const {
+    Output GetOutput(uint8_t outindex) const {
         assert(outindex < outputs.size());
         return this->outputs[outindex];
     }
@@ -179,7 +179,7 @@ public:
     //! All scripts in the block txs (input & output). Redundant
     std::vector<ScriptUsage> scripts;
     //! Total rough size of the block
-    uint64_t total_rough_size;
+    uint32_t total_rough_size;
 
 public:
     static constexpr size_t DEFAULT_SCRIPTS_PER_BLOCK = 4500;
@@ -220,7 +220,7 @@ public:
         return this->txs[txindex];
     }
 
-    Output GetOutput(uint16_t txindex, uint16_t outindex) const {
+    Output GetOutput(uint16_t txindex, uint8_t outindex) const {
         const Transaction& tx = GetTxByIndex(txindex);
         return tx.GetOutput(outindex);
     }
@@ -238,7 +238,7 @@ public:
 
     size_t GetTxCount() const { return txs.size(); }
 
-    uint64_t GetRoughSize() const { return total_rough_size; }
+    uint32_t GetRoughSize() const { return total_rough_size; }
 };
 
 class Blockchain {
@@ -268,7 +268,7 @@ public:
         return true;
     }
 
-    Output GetOutput(uint32_t height, uint16_t txindex, uint16_t outindex) const {
+    Output GetOutput(uint32_t height, uint16_t txindex, uint8_t outindex) const {
         assert(height < blocks.size());
         const Block& block = this->blocks[height];
         return block.GetOutput(txindex, outindex);
@@ -460,7 +460,7 @@ public:
             }
         }
         if (block.height % 50 == 0) {
-            printf("Added block %d with %ld txs, size %ld ; utxos: %ld, scripts: %ld \n",
+            printf("Added block %d with %ld txs, size %d ; utxos: %ld, scripts: %ld \n",
                 block.height, block.txs.size(), block.GetRoughSize(), utxo_set.size(), script_index.size());
         }
     }
@@ -528,7 +528,7 @@ public:
         }
     }
 
-    uint64_t PickScriptIndexWithDesiredBlockOccurance(size_t min, size_t max) const {
+    ScriptIdx PickScriptIndexWithDesiredBlockOccurance(size_t min, size_t max) const {
         size_t tries = 0;
         while (tries < 1'000'000) {
             const auto script_idx = scriptpool.PickIndexWithSkewedProb();
@@ -580,7 +580,7 @@ public:
         return total_range_filter_size;
     }
 
-    SimulationResult RunBlockFilterSimulation(uint64_t script_idx) const {
+    SimulationResult RunBlockFilterSimulation(ScriptIdx script_idx) const {
         printf("Running block filter simulation ... \n");
         Script script = scriptpool.GetScript(script_idx);
         size_t block_filter_matches{0};
@@ -785,7 +785,7 @@ BOOST_AUTO_TEST_CASE(whole_blockchain)
             block_range_size, total_size, ratio);
     }
 
-    std::vector<uint64_t> scripts3;
+    std::vector<ScriptIdx> scripts3;
     for (auto i = 0; i < 6; ++i) {
         scripts3.emplace_back(manager.PickScriptIndexWithDesiredBlockOccurance(3, 6));
     }
@@ -799,7 +799,7 @@ BOOST_AUTO_TEST_CASE(whole_blockchain)
         }
     }
 
-    std::vector<uint64_t> scripts20;
+    std::vector<ScriptIdx> scripts20;
     for (auto i = 0; i < 6; ++i) {
         scripts20.emplace_back(manager.PickScriptIndexWithDesiredBlockOccurance(20, 30));
     }
