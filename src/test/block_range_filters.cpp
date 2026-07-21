@@ -584,19 +584,19 @@ public:
             printf("Chain %ld blocks loaded from %s\n", chain.size(), CHAIN_CACHE);
             printf("ScriptIndex %ld entries loaded from %s\n", script_index.size(), SCRIPTIDX_CACHE);
             if (chain.size() >= block_count + 1) {
-                printf("Using data read!\n");
+                printf("Using the read data!\n");
                 return;
             }
         }
         // Load failed or insufficient blocks — rebuild from scratch.
         // Reset all state that may have been partially modified by the failed reads.
         chain = Blockchain{};
-        script_index = ScriptIndex{};
         utxo_set = UtxoSet{};
         AddBlock(CreateGenesisBlock());
         this->CreateBlocks(block_count);
         chain.Write(CHAIN_CACHE);
         printf("Chain %ld blocks written to %s\n", chain.size(), CHAIN_CACHE);
+        BuildScriptIndex();
         script_index.Write(SCRIPTIDX_CACHE);
         printf("ScriptIndex %ld entries written to %s\n", script_index.size(), SCRIPTIDX_CACHE);
     }
@@ -612,28 +612,34 @@ public:
     {
         // printf("Adding block %d (utxos: %ld)...\n", block.height, utxo_set.size());
         chain.AddBlock(block);
-        // Update UTXOS and ScriptIndex
+        // Update UTXOs
         for (uint16_t txindex = 0; txindex < block.txs.size(); ++txindex) {
             const auto& tx = block.txs[txindex];
-            for (const auto& inp : tx.GetInputs()) {
-                // Utxos remove spent -- Done in GenerateTxsForNextBlock
+            // Utxos remove spent -- Done in GenerateTxsForNextBlock
+            // for (const auto& inp : tx.GetInputs()) {
                 // utxo_set.Remove(inp);
-                const auto& spent = chain.GetOutput(inp.block_height, inp.tx_index, inp.output_index);
-                script_index.Add(spent.ScIdx(), block.height);
-            }
-            // ScriptIndex: inputs: done in GenerateTxsForNextBlock
+            // }
             for (uint8_t outindex = 0; outindex < tx.GetOutputs().size(); ++outindex) {
                 // Utxos: add new unspent
-                Input input{block.height, txindex, outindex};
-                utxo_set.Add(input);
-                // ScriptIndex: add outputs
-                script_index.Add(tx.GetOutput(outindex).ScIdx(), block.height);
+                utxo_set.Add(Input{block.height, txindex, outindex});
             }
         }
         if (block.height % 50 == 0) {
-            printf("Added block %d with %ld txs, size %d ; utxos: %ld, scripts: %ld \n",
-                block.height, block.txs.size(), block.GetRoughSize(), utxo_set.size(), script_index.size());
+            printf("Added block %d with %ld txs, size %d ; utxos: %ld \n",
+                block.height, block.txs.size(), block.GetRoughSize(), utxo_set.size());
         }
+    }
+
+    void BuildScriptIndex() {
+        printf("Building script index...\n");
+        script_index = ScriptIndex{};
+        for (uint32_t h = 0; h < chain.size(); ++h) {
+            const auto& block = chain.GetBlock(h);
+            for (const auto& sc : block.scripts) {
+                script_index.Add(sc.script_idx, h);
+            }
+        }
+        printf("Script index built: %ld entries\n", script_index.size());
     }
 
     Transaction CreateGenesisTx() const {
@@ -647,7 +653,7 @@ public:
         return genesis_block;
     }
 
-    std::vector<Transaction> GenerateTxsForNextBlock(size_t desired_tx_num, uint32_t block_height)
+    std::vector<Transaction> GenerateTxsForNextBlock(size_t desired_tx_num)
     {
         auto num = std::max(std::min(utxo_set.size() / 3, desired_tx_num), size_t(1));
         std::vector<Transaction> txs;
@@ -665,7 +671,6 @@ public:
             auto numoutputs = 2;
             for (auto i = 0; i < numoutputs; ++i) {
                 const auto output_script_index = scriptpool.PickIndexWithSkewedProb();
-                script_index.Add(output_script_index, block_height);
                 outputs.emplace_back(Output(output_script_index));
             }
             auto tx = Transaction(chain, scriptpool, inputs, outputs);
@@ -676,7 +681,7 @@ public:
 
     void AddNewBlock(size_t desired_tx_num) {
         auto height = chain.size();
-        auto txs = GenerateTxsForNextBlock(desired_tx_num, height);
+        auto txs = GenerateTxsForNextBlock(desired_tx_num);
         auto block = Block(chain, height, txs, rng);
         AddBlock(block);
     }
