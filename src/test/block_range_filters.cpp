@@ -17,8 +17,8 @@
 
 #include <boost/test/unit_test.hpp>
 
-// const uint64_t BLOCK_COUNT = 20'000;
-const uint64_t BLOCK_COUNT = 25'000;
+const uint64_t BLOCK_COUNT = 30'000;
+// const uint64_t BLOCK_COUNT = 5'000;
 const uint64_t SKIP_BLOCKS = 0;
 const uint64_t TX_PER_BLOCK = 3'000;
 const uint8_t HEADER_SIZE = 22;
