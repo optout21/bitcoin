@@ -813,7 +813,12 @@ public:
             Block block = Block::ReadFrom(f);
             if (!f) break;
             fn(block);
+            if (i % 100 == 99) {
+                printf("  [%d/%d]\r", i + 1, n);
+                fflush(stdout);
+            }
         }
+        printf("  [%d/%d]\n", n, n);
     }
 
 }; // BlockChainManager
