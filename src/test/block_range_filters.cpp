@@ -18,7 +18,7 @@
 #include <boost/test/unit_test.hpp>
 
 // const uint64_t BLOCK_COUNT = 20'000;
-const uint64_t BLOCK_COUNT = 5'000;
+const uint64_t BLOCK_COUNT = 25'000;
 const uint64_t SKIP_BLOCKS = 0;
 const uint64_t TX_PER_BLOCK = 3'000;
 const uint8_t HEADER_SIZE = 22;
@@ -113,6 +113,7 @@ public:
     uint32_t block_height;
     uint16_t tx_index;
     uint8_t output_index;
+    ScriptIdx script_idx{0};  // script of the output this input spends
 
     bool operator<(const Input& other) const
     {
@@ -121,7 +122,7 @@ public:
     }
 
     void print() const {
-        printf("h %d  tx %d  out %d", block_height, tx_index, output_index);
+        printf("h %d  tx %d  out %d  sc %d", block_height, tx_index, output_index, script_idx);
     }
 };
 
@@ -146,7 +147,7 @@ class Transaction {
     Transaction() : rough_size(0) {}
 
 public:
-    Transaction(const Blockchain& chain, const ScriptPool& scriptpool, std::vector<Input> inputs, std::vector<Output> outputs);
+    Transaction(const ScriptPool& scriptpool, std::vector<Input> inputs, std::vector<Output> outputs);
 
     void WriteTo(std::ostream& f) const {
         f.write(reinterpret_cast<const char*>(&rough_size), sizeof(rough_size));
@@ -156,6 +157,7 @@ public:
             f.write(reinterpret_cast<const char*>(&inp.block_height), sizeof(inp.block_height));
             f.write(reinterpret_cast<const char*>(&inp.tx_index),     sizeof(inp.tx_index));
             f.write(reinterpret_cast<const char*>(&inp.output_index), sizeof(inp.output_index));
+            f.write(reinterpret_cast<const char*>(&inp.script_idx),   sizeof(inp.script_idx));
         }
         uint16_t no = outputs.size();
         f.write(reinterpret_cast<const char*>(&no), sizeof(no));
@@ -175,6 +177,7 @@ public:
             f.read(reinterpret_cast<char*>(&inp.block_height), sizeof(inp.block_height));
             f.read(reinterpret_cast<char*>(&inp.tx_index),     sizeof(inp.tx_index));
             f.read(reinterpret_cast<char*>(&inp.output_index), sizeof(inp.output_index));
+            f.read(reinterpret_cast<char*>(&inp.script_idx),   sizeof(inp.script_idx));
         }
         uint16_t no;
         f.read(reinterpret_cast<char*>(&no), sizeof(no));
@@ -228,7 +231,7 @@ public:
 
     Block() : height(0), total_rough_size(0) {}
 
-    Block(const Blockchain& chain, uint64_t height, std::vector<Transaction> transactions, FastRandomContext& rng);
+    Block(uint64_t height, std::vector<Transaction> transactions, FastRandomContext& rng);
 
     void WriteTo(std::ostream& f) const {
         f.write(reinterpret_cast<const char*>(&height),           sizeof(height));
@@ -325,48 +328,55 @@ public:
 
 class Blockchain {
     std::vector<Block> blocks;
+    uint32_t total_height{0};  // total blocks ever added, including those flushed from memory
 
 public:
     static constexpr size_t NUM_BLOCKS = 300'000;
 
-    //! construct empty
     Blockchain() {}
 
     void AddBlock(const Block& block) {
-        assert(blocks.size() == block.height);
+        assert(total_height == block.height);
         blocks.emplace_back(block);
+        ++total_height;
     }
 
+    //! Clear in-memory blocks while preserving the logical total_height.
+    void Flush() {
+        blocks.clear();
+    }
+
+    //! Returns true if height is currently held in memory (not flushed).
     bool HasBlock(uint32_t height) const {
-        return height < blocks.size();
+        uint32_t base = total_height - (uint32_t)blocks.size();
+        return height >= base && height < total_height;
     }
 
-    bool HasInput(const Input& input) const {
-        if (!HasBlock(input.block_height)) return false;
-        const Block& block = blocks[input.block_height];
-        if (!block.HasTxindex(input.tx_index)) return false;
-        const Transaction& tx = block.GetTxByIndex(input.tx_index);
-        if (!tx.HasOutIndex(input.output_index)) return false;
-        return true;
-    }
+    size_t size() const { return total_height; }
 
-    Output GetOutput(uint32_t height, uint16_t txindex, uint8_t outindex) const {
-        assert(height < blocks.size());
-        const Block& block = this->blocks[height];
-        return block.GetOutput(txindex, outindex);
-    }
-
-    size_t size() const { return blocks.size(); }
-
+    //! Only valid for blocks still in memory (asserts otherwise).
     const Block& GetBlock(uint32_t height) const {
-        return blocks[height];
+        uint32_t base = total_height - (uint32_t)blocks.size();
+        assert(height >= base && height < total_height);
+        return blocks[height - base];
     }
 
     void Write(const std::string& path) const {
         std::ofstream f(path, std::ios::binary);
-        uint32_t n = blocks.size();
-        f.write(reinterpret_cast<const char*>(&n), sizeof(n));
+        f.write(reinterpret_cast<const char*>(&total_height), sizeof(total_height));
         for (const auto& block : blocks) block.WriteTo(f);
+    }
+
+    //! Read count only (fast resume — no blocks loaded into memory).
+    bool ReadCount(const std::string& path) {
+        std::ifstream f(path, std::ios::binary);
+        if (!f) return false;
+        uint32_t n;
+        f.read(reinterpret_cast<char*>(&n), sizeof(n));
+        if (!f) return false;
+        total_height = n;
+        blocks.clear();
+        return true;
     }
 
     bool Read(const std::string& path) {
@@ -382,23 +392,23 @@ public:
             blocks.emplace_back(Block::ReadFrom(f));
             if (!f) return false;
         }
+        total_height = n;
         return true;
     }
 
-    //! Append blocks[from_height..end] to an existing file, updating the count at position 0.
+    //! Append all in-memory blocks to the file, updating the total count header.
     //! Falls back to Write() if the file does not exist yet.
-    void Append(const std::string& path, uint32_t from_height) const {
+    void Append(const std::string& path) const {
         std::fstream f(path, std::ios::binary | std::ios::in | std::ios::out);
         if (!f) {
             Write(path);
             return;
         }
-        uint32_t n = blocks.size();
         f.seekp(0);
-        f.write(reinterpret_cast<const char*>(&n), sizeof(n));
+        f.write(reinterpret_cast<const char*>(&total_height), sizeof(total_height));
         f.seekp(0, std::ios::end);
-        for (uint32_t i = from_height; i < blocks.size(); ++i) {
-            blocks[i].WriteTo(f);
+        for (const auto& block : blocks) {
+            block.WriteTo(f);
         }
     }
 };
@@ -454,6 +464,7 @@ public:
             f.write(reinterpret_cast<const char*>(&inp.block_height), sizeof(inp.block_height));
             f.write(reinterpret_cast<const char*>(&inp.tx_index),     sizeof(inp.tx_index));
             f.write(reinterpret_cast<const char*>(&inp.output_index), sizeof(inp.output_index));
+            f.write(reinterpret_cast<const char*>(&inp.script_idx),   sizeof(inp.script_idx));
         }
     }
 
@@ -471,6 +482,7 @@ public:
             f.read(reinterpret_cast<char*>(&inp.block_height), sizeof(inp.block_height));
             f.read(reinterpret_cast<char*>(&inp.tx_index),     sizeof(inp.tx_index));
             f.read(reinterpret_cast<char*>(&inp.output_index), sizeof(inp.output_index));
+            f.read(reinterpret_cast<char*>(&inp.script_idx),   sizeof(inp.script_idx));
             if (!f) return false;
             map_of_indices[inp] = i;
         }
@@ -631,8 +643,9 @@ public:
             printf("ScriptPool %ld scripts loaded from %s\n", scriptpool.size(), SCRIPTPOOL_CACHE);
         }
 
-        // Try to resume from a previous (possibly partial) run
-        if (chain.Read(CHAIN_CACHE) && utxo_set.Read(UTXOSET_CACHE)) {
+        // Try to resume from a previous (possibly partial) run.
+        // ReadCount reads only the header (block count) — no blocks loaded into memory.
+        if (chain.ReadCount(CHAIN_CACHE) && utxo_set.Read(UTXOSET_CACHE)) {
             printf("Resumed: chain %ld blocks, utxo_set %ld entries\n", chain.size(), utxo_set.size());
         } else {
             // Nothing usable on disk — start from scratch
@@ -640,6 +653,7 @@ public:
             utxo_set = UtxoSet{};
             AddBlock(CreateGenesisBlock());
             chain.Write(CHAIN_CACHE);
+            chain.Flush();
             utxo_set.Write(UTXOSET_CACHE);
             printf("Started fresh: genesis block written\n");
         }
@@ -659,7 +673,7 @@ public:
             return;
         }
 
-        // Create remaining blocks in chunks, saving after each
+        // Create remaining blocks in chunks, flushing from memory after each save.
         while (chain.size() < target) {
             uint32_t chunk_start = chain.size();
             uint32_t to_create = std::min(CHUNK_SIZE, target - (uint32_t)chain.size());
@@ -667,7 +681,8 @@ public:
             for (uint32_t i = 0; i < to_create; ++i) {
                 AddNewBlock(TX_PER_BLOCK);
             }
-            chain.Append(CHAIN_CACHE, chunk_start);
+            chain.Append(CHAIN_CACHE);
+            chain.Flush();  // free in-memory blocks; total_height is preserved
             utxo_set.Write(UTXOSET_CACHE);
             printf("Saved: chain %ld blocks, utxo_set %ld entries\n", chain.size(), utxo_set.size());
         }
@@ -690,7 +705,9 @@ public:
             // }
             for (uint8_t outindex = 0; outindex < tx.GetOutputs().size(); ++outindex) {
                 // Utxos: add new unspent
-                utxo_set.Add(Input{block.height, txindex, outindex});
+                // Store the output's script_idx in the Input so inputs carry it when spent
+                ScriptIdx sc = tx.GetOutput(outindex).ScIdx();
+                utxo_set.Add(Input{block.height, txindex, outindex, sc});
             }
         }
         if (block.height % 50 == 0) {
@@ -712,13 +729,12 @@ public:
 
     Transaction CreateGenesisTx() const {
         auto script_index1 = scriptpool.PickIndexWithSkewedProb();
-        return Transaction(chain, scriptpool, {}, {Output(script_index1)});
+        return Transaction(scriptpool, {}, {Output(script_index1)});
     }
 
     Block CreateGenesisBlock() const {
         auto tx1 = CreateGenesisTx();
-        auto genesis_block = Block(chain, 0, {tx1}, rng);
-        return genesis_block;
+        return Block(0, {tx1}, rng);
     }
 
     std::vector<Transaction> GenerateTxsForNextBlock(size_t desired_tx_num)
@@ -741,7 +757,7 @@ public:
                 const auto output_script_index = scriptpool.PickIndexWithSkewedProb();
                 outputs.emplace_back(Output(output_script_index));
             }
-            auto tx = Transaction(chain, scriptpool, inputs, outputs);
+            auto tx = Transaction(scriptpool, inputs, outputs);
             txs.emplace_back(tx);
         }
         return txs;
@@ -750,7 +766,7 @@ public:
     void AddNewBlock(size_t desired_tx_num) {
         auto height = chain.size();
         auto txs = GenerateTxsForNextBlock(desired_tx_num);
-        auto block = Block(chain, height, txs, rng);
+        auto block = Block(height, txs, rng);
         AddBlock(block);
     }
 
@@ -866,18 +882,18 @@ public:
         size_t negative_block_filter_matches{0};
         size_t total_txs{0};
         size_t total_dl{0};
-        // Check each block filter
-        for (uint32_t h = SKIP_BLOCKS; h < chain_mgr.size(); ++h) {
-            const auto& block_filter = this->block_filters[h];
+        chain_mgr.ForEachBlock([&](const Block& block) {
+            uint32_t h = block.height;
+            if (h < SKIP_BLOCKS) return;
+            uint32_t fi = h - (uint32_t)SKIP_BLOCKS;
+            const auto& block_filter = this->block_filters[fi];
             total_dl += block_filter.GetEncoded().size();
-            // printf("h %d \n", h);
             if (block_filter.Match(script)) {
                 // filter matches, we download & check the block
                 // printf("Block filter height = %d matched!", h);
                 ++block_filter_matches;
-                total_dl += chain_mgr.GetBlock(h).GetRoughSize();
-                // Obtain transactions
-                const auto txs = chain_mgr.GetBlock(h).GetTxsByScript(script_idx);
+                total_dl += block.GetRoughSize();
+                const auto txs = block.GetTxsByScript(script_idx);
                 if (txs.empty()) {
                     printf("Block filter height = %d matched but negative! \n", h);
                     ++negative_block_filter_matches;
@@ -886,7 +902,7 @@ public:
                 }
                 total_txs += txs.size();
             }
-        }
+        });
         printf("Block filter simulation done, dl_size %ld filter matches %ld  negative %ld pos_blocks %ld pos_txs %ld \n",
             total_dl, block_filter_matches, negative_block_filter_matches, block_filter_matches - negative_block_filter_matches, total_txs);
         return SimulationResult {
@@ -907,78 +923,83 @@ public:
         size_t total_filters{0};
         size_t total_txs{0};
         size_t total_dl{0};
-        // Check each block RANGE filter
-        for (uint32_t h = SKIP_BLOCKS; h < chain_mgr.size(); h += block_range_size) {
-            const auto& block_range_filter = filters[h / block_range_size];
-            total_dl += block_range_filter.GetEncoded().size();
-            // printf("h %d \n", h);
-            if (block_range_filter.Match(script)) {
-                // range filter matches, we download & check each block filter
-                // printf("Range block filter height = %d - %d (%d) matched! \n", h, h + block_range_size - 1, h / block_range_size);
-                ++block_range_filter_matches;
-                size_t filters2{0};
-                size_t txs2{0};
-                for (uint32_t h2 = h; h2 < h + block_range_size && h2 < chain_mgr.size(); ++h2) {
-                    const auto& block_filter = this->block_filters[h2];
-                    total_dl += block_filter.GetEncoded().size();
-                    // printf("h2 %d \n", h2);
-                    if (block_filter.Match(script)) {
-                        // filter matches, we download & check the block
-                        // printf("Block filter height = %d matched!", h);
-                        ++block_filter_matches;
-                        total_dl += chain_mgr.GetBlock(h2).GetRoughSize();
-                        // Obtain transactions
-                        const auto txs = chain_mgr.GetBlock(h2).GetTxsByScript(script_idx);
-                        if (txs.empty()) {
-                            printf("Block filter height = %d matched but negative! \n", h2);
-                            ++negative_block_filter_matches;
-                        } else {
-                            printf("Block filter height = %d matched (positive, %ld txs)! \n", h2, txs.size());
-                            ++total_filters;
-                            ++filters2;
-                        }
-                        txs2 += txs.size();
-                    }
-                    total_dl += chain_mgr.GetBlock(h).GetRoughSize();
-                } // h2
-                if (txs2 == 0) {
-                    printf("Range block filter height = %d - %d (%d) matched but negative! \n", h, h + block_range_size - 1, h / block_range_size);
-                    ++negative_block_range_filter_matches;
-                } else {
-                    printf("Range block filter height = %d - %d (%d) matched (positive, %ld filters, %ld txs)! \n", h, h + block_range_size - 1, h / block_range_size, filters2, txs2);
-                }
-                total_txs += txs2;
+
+        int32_t cur_range_idx = -1;
+        bool cur_range_matched = false;
+        size_t cur_range_txs = 0;
+        size_t cur_range_filters = 0;
+        uint32_t cur_range_start = 0;
+
+        auto finalize_range = [&]() {
+            if (cur_range_idx < 0 || !cur_range_matched) return;
+            if (cur_range_txs == 0) {
+                printf("Range block filter height = %d - %d (%d) matched but negative! \n",
+                    cur_range_start, cur_range_start + block_range_size - 1, cur_range_idx);
+                ++negative_block_range_filter_matches;
+            } else {
+                printf("Range block filter height = %d - %d (%d) matched (positive, %ld filters, %ld txs)! \n",
+                    cur_range_start, cur_range_start + block_range_size - 1, cur_range_idx, cur_range_filters, cur_range_txs);
             }
-        }
+        };
+
+        chain_mgr.ForEachBlock([&](const Block& block) {
+            uint32_t h = block.height;
+            if (h < SKIP_BLOCKS) return;
+            uint32_t fi = h - (uint32_t)SKIP_BLOCKS;
+            int32_t range_idx = (int32_t)(fi / block_range_size);
+
+            if (range_idx != cur_range_idx) {
+                finalize_range();
+                cur_range_idx = range_idx;
+                cur_range_txs = 0;
+                cur_range_filters = 0;
+                cur_range_start = h;
+                const auto& block_range_filter = filters[range_idx];
+                total_dl += block_range_filter.GetEncoded().size();
+                cur_range_matched = block_range_filter.Match(script);
+                if (cur_range_matched) ++block_range_filter_matches;
+            }
+
+            if (!cur_range_matched) return;
+
+            const auto& block_filter = this->block_filters[fi];
+            total_dl += block_filter.GetEncoded().size();
+            if (block_filter.Match(script)) {
+                ++block_filter_matches;
+                total_dl += block.GetRoughSize();
+                const auto txs = block.GetTxsByScript(script_idx);
+                if (txs.empty()) {
+                    printf("Block filter height = %d matched but negative! \n", h);
+                    ++negative_block_filter_matches;
+                } else {
+                    printf("Block filter height = %d matched (positive, %ld txs)! \n", h, txs.size());
+                    ++total_filters;
+                    ++cur_range_filters;
+                }
+                cur_range_txs += txs.size();
+                total_txs += txs.size();
+            }
+            total_dl += block.GetRoughSize();
+        });
+        finalize_range();
+
         printf("Block range filter simulation done %d, dl_size %ld range filter matches %ld negative %ld   filter matches %ld negative %ld  pos_txs %ld \n",
             block_range_size, total_dl, block_range_filter_matches, negative_block_range_filter_matches, block_filter_matches, negative_block_filter_matches, total_txs);
         return SimulationResult {
             .block_range_size = block_range_size,
-            .total_filter_size = 0, // Not available here
-            .total_dl = 0, // TODO
+            .total_filter_size = 0,
+            .total_dl = 0,
         };
     }
 }; // FilterManager
 
-Transaction::Transaction(const Blockchain& chain, const ScriptPool& scriptpool, std::vector<Input> inputs, std::vector<Output> outputs) {
-    this->inputs.clear();
-    for (const auto& inp : inputs) {
-        if (!chain.HasInput(inp)) {
-            printf("Tx::Tx HasInput failed! "); inp.print(); printf(" \n");
-            assert(false);
-        }
-        this->inputs.emplace_back(inp);
-    }
-    this->outputs.clear();
-    for (const auto& o : outputs) {
-        this->outputs.emplace_back(o);
-    }
+Transaction::Transaction(const ScriptPool& scriptpool, std::vector<Input> inputs, std::vector<Output> outputs) {
+    this->inputs = std::move(inputs);
+    this->outputs = std::move(outputs);
 
-    // compute size
     size_t size = HEADER_SIZE + this->inputs.size() * INPUT_SIZE;
-    for (const auto& o: outputs) {
-        const auto& script = scriptpool.GetScript(o.ScIdx());
-        size += 8 + script.size();
+    for (const auto& o : this->outputs) {
+        size += 8 + scriptpool.GetScript(o.ScIdx()).size();
     }
     this->rough_size = size;
 }
@@ -1001,11 +1022,11 @@ bool Transaction::MatchesScript(const Script& script) const {
 }
 */
 
-Block::Block(const Blockchain& chain, uint64_t height, std::vector<Transaction> transactions, FastRandomContext& rng) {
+Block::Block(uint64_t height, std::vector<Transaction> transactions, FastRandomContext& rng) {
     this->height = height;
     SetRandomBlockHash(rng);
 
-    txs = transactions;
+    txs = std::move(transactions);
     this->total_rough_size = 0;
 
     this->scripts.clear();
@@ -1013,8 +1034,8 @@ Block::Block(const Blockchain& chain, uint64_t height, std::vector<Transaction> 
     for (size_t ti = 0; ti < this->txs.size(); ++ti) {
         const auto& tx = this->txs[ti];
         for (const auto& inp : tx.GetInputs()) {
-            const auto& script = chain.GetOutput(inp.block_height, inp.tx_index, inp.output_index);
-            this->scripts.emplace_back(ti, true, script.ScIdx());
+            // inp.script_idx is set when the UTXO was created; no chain lookup needed
+            this->scripts.emplace_back(ti, true, inp.script_idx);
         }
         for (const auto& o : tx.GetOutputs()) {
             this->scripts.emplace_back(ti, false, o.ScIdx());
