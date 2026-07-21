@@ -2,6 +2,10 @@
 // Distributed under the MIT software license, see the accompanying
 // file COPYING or http://www.opensource.org/licenses/mit-license.php.
 
+//
+// cmake --build build -t test_bitcoin -j4 && ./build/bin/test_bitcoin -t block_range_filters
+//
+
 #include <blockfilter.h>
 #include <uint256.h>
 #include <test/util/setup_common.h>
@@ -96,34 +100,16 @@ public:
     ScriptIdx ScIdx() const { return script_idx; }
 };
 
-typedef size_t InputIdx;
-
-class InputPool {
-    std::vector<Input> inputs;
-public:
-    InputPool() : inputs() {}
-
-    InputIdx Add(Input input) {
-        InputIdx idx = inputs.size();
-        inputs.emplace_back(input);
-        return idx;
-    }
-
-    const Input& GetInput(InputIdx idx) const {
-        assert(idx < this->inputs.size());
-        return this->inputs[idx];
-    }
-};
 
 class Blockchain;
 
 class Transaction {
-    std::vector<InputIdx> inputs;
+    std::vector<Input> inputs;
     std::vector<Output> outputs;
     uint64_t rough_size;
 
 public:
-    Transaction(const Blockchain& chain, const ScriptPool& scriptpool, const InputPool& inputpool, std::vector<InputIdx> inputs, std::vector<Output> outputs);
+    Transaction(const Blockchain& chain, const ScriptPool& scriptpool, std::vector<Input> inputs, std::vector<Output> outputs);
 
     bool HasOutIndex(uint16_t outindex) const {
         return outindex < outputs.size();
@@ -139,7 +125,7 @@ public:
         return this->outputs[outindex];
     }
 
-    const std::vector<InputIdx>& GetInputs() const { return this->inputs; }
+    const std::vector<Input>& GetInputs() const { return this->inputs; }
     const std::vector<Output>& GetOutputs() const { return this->outputs; }
 };
 
@@ -167,7 +153,7 @@ public:
     //! Create empty block
     // Block() {}
 
-    Block(const Blockchain& chain, const InputPool& inputpool, uint64_t height, std::vector<Transaction> transactions, FastRandomContext& rng);
+    Block(const Blockchain& chain, uint64_t height, std::vector<Transaction> transactions, FastRandomContext& rng);
 
     // static Block CreateRandom(FastRandomContext& rng) {
     //     Block block;
@@ -262,26 +248,26 @@ public:
 };
 
 class UtxoSet {
-    std::vector<InputIdx> vector_of_utxos;
-    std::map<InputIdx, size_t> map_of_indices;
+    std::vector<Input> vector_of_utxos;
+    std::map<Input, size_t> map_of_indices;
     // size_t next_index;
 
 public:
     UtxoSet() : vector_of_utxos(), map_of_indices() {}
 
-    void Add(InputIdx input_idx) {
+    void Add(Input input) {
         auto index = vector_of_utxos.size();
-        vector_of_utxos.emplace_back(input_idx);
-        map_of_indices[input_idx] = index;
+        vector_of_utxos.emplace_back(input);
+        map_of_indices[input] = index;
     }
 
-    void Remove(InputIdx input_idx) {
+    void Remove(Input input) {
         auto orig_size = vector_of_utxos.size();
         // assert(map_of_indices.size() == orig_size);
 
-        assert(map_of_indices.find(input_idx) != map_of_indices.end());
-        auto index = map_of_indices[input_idx];
-        assert(map_of_indices.erase(input_idx) == 1);
+        assert(map_of_indices.find(input) != map_of_indices.end());
+        auto index = map_of_indices[input];
+        assert(map_of_indices.erase(input) == 1);
         // assert(map_of_indices.size() == orig_size - 1);
         vector_of_utxos[index] = vector_of_utxos[vector_of_utxos.size() - 1];
         map_of_indices[vector_of_utxos[index]] = index;
@@ -291,15 +277,15 @@ public:
         // assert(map_of_indices.size() == orig_size - 1);
     }
 
-    InputIdx PickAndRemoveRandom(FastRandomContext& rng) {
+    Input PickAndRemoveRandom(FastRandomContext& rng) {
         const auto index = size_t(
             (double)rng.rand64() / (double)std::numeric_limits<uint64_t>::max() * (double)vector_of_utxos.size()
         );
         assert(index < vector_of_utxos.size());
-        InputIdx input_idx = vector_of_utxos[index];
+        Input input = vector_of_utxos[index];
         // printf("Picked index %ld of %ld, input: ", index, vector_of_utxos.size()); input.print(); printf("\n");
-        Remove(input_idx);
-        return input_idx;
+        Remove(input);
+        return input;
     }
 
     size_t size() const { return vector_of_utxos.size(); }
@@ -389,7 +375,6 @@ struct SimulationResult {
 
 class BlockChainManager {
     ScriptPool scriptpool;
-    InputPool inputpool;
     Blockchain chain;
     UtxoSet utxo_set;
     ScriptIndex script_index;
@@ -403,7 +388,7 @@ class BlockChainManager {
 
 public:
     BlockChainManager(FastRandomContext& rng, size_t scriptpool_size = ScriptPool::SCRIPT_POOL_SIZE) :
-        scriptpool(rng, scriptpool_size), inputpool(), chain(), utxo_set(), script_index(),
+        scriptpool(rng, scriptpool_size), chain(), utxo_set(), script_index(),
         rng(rng)
     {
         AddBlock(CreateGenesisBlock());
@@ -416,10 +401,9 @@ public:
         // Update UTXOS and ScriptIndex
         for (uint16_t txindex = 0; txindex < block.txs.size(); ++txindex) {
             const auto& tx = block.txs[txindex];
-            for (const auto& inp_idx : tx.GetInputs()) {
+            for (const auto& inp : tx.GetInputs()) {
                 // Utxos remove spent -- Done in GenerateTxsForNextBlock
-                // utxo_set.Remove(i);
-                const auto& inp = inputpool.GetInput(inp_idx);
+                // utxo_set.Remove(inp);
                 const auto& spent = chain.GetOutput(inp.block_height, inp.tx_index, inp.output_index);
                 script_index.Add(spent.ScIdx(), block.height);
             }
@@ -427,8 +411,7 @@ public:
             for (uint16_t outindex = 0; outindex < tx.GetOutputs().size(); ++outindex) {
                 // Utxos: add new unspent
                 Input input{block.height, txindex, outindex};
-                InputIdx inp_idx = inputpool.Add(input);
-                utxo_set.Add(inp_idx);
+                utxo_set.Add(input);
                 // ScriptIndex: add outputs
                 script_index.Add(tx.GetOutput(outindex).ScIdx(), block.height);
             }
@@ -441,12 +424,12 @@ public:
 
     Transaction CreateGenesisTx() const {
         auto script_index1 = scriptpool.PickIndexWithSkewedProb();
-        return Transaction(chain, scriptpool, inputpool, {}, {Output(script_index1)});
+        return Transaction(chain, scriptpool, {}, {Output(script_index1)});
     }
 
     Block CreateGenesisBlock() const {
         auto tx1 = CreateGenesisTx();
-        auto genesis_block = Block(chain, inputpool, 0, {tx1}, rng);
+        auto genesis_block = Block(chain, 0, {tx1}, rng);
         return genesis_block;
     }
 
@@ -459,12 +442,10 @@ public:
         for (size_t i = 0; i < num; ++i) {
             if (utxo_set.size() == 0) break;
             // TODO more flexible input and output count
-            std::vector<InputIdx> inputs;
+            std::vector<Input> inputs;
             auto numinputs = std::min(size_t(2), utxo_set.size());
             for (size_t i = 0; i < numinputs; ++i) {
-                InputIdx inp_idx = utxo_set.PickAndRemoveRandom(rng);
-                // auto inp_idx = this->inputpool.Add(inp);
-                inputs.emplace_back(inp_idx);
+                inputs.emplace_back(utxo_set.PickAndRemoveRandom(rng));
             }
             std::vector<Output> outputs;
             auto numoutputs = 2;
@@ -473,7 +454,7 @@ public:
                 script_index.Add(output_script_index, block_height);
                 outputs.emplace_back(Output(output_script_index));
             }
-            auto tx = Transaction(chain, scriptpool, inputpool, inputs, outputs);
+            auto tx = Transaction(chain, scriptpool, inputs, outputs);
             txs.emplace_back(tx);
         }
         return txs;
@@ -482,7 +463,7 @@ public:
     void AddNewBlock(size_t desired_tx_num) {
         auto height = chain.size();
         auto txs = GenerateTxsForNextBlock(desired_tx_num, height);
-        auto block = Block(chain, inputpool, height, txs, rng);
+        auto block = Block(chain, height, txs, rng);
         AddBlock(block);
     }
 
@@ -662,15 +643,14 @@ public:
     }
 }; // BlockChainManager
 
-Transaction::Transaction(const Blockchain& chain, const ScriptPool& scriptpool, const InputPool& inputpool, std::vector<InputIdx> inputs, std::vector<Output> outputs) {
+Transaction::Transaction(const Blockchain& chain, const ScriptPool& scriptpool, std::vector<Input> inputs, std::vector<Output> outputs) {
     this->inputs.clear();
-    for (const auto& inp_idx : inputs) {
-        const auto& inp = inputpool.GetInput(inp_idx);
+    for (const auto& inp : inputs) {
         if (!chain.HasInput(inp)) {
             printf("Tx::Tx HasInput failed! "); inp.print(); printf(" \n");
             assert(false);
         }
-        this->inputs.emplace_back(inp_idx);
+        this->inputs.emplace_back(inp);
     }
     this->outputs.clear();
     for (const auto& o : outputs) {
@@ -704,7 +684,7 @@ bool Transaction::MatchesScript(const Script& script) const {
 }
 */
 
-Block::Block(const Blockchain& chain, const InputPool& inputpool, uint64_t height, std::vector<Transaction> transactions, FastRandomContext& rng) {
+Block::Block(const Blockchain& chain, uint64_t height, std::vector<Transaction> transactions, FastRandomContext& rng) {
     this->height = height;
     SetRandomBlockHash(rng);
 
@@ -715,8 +695,7 @@ Block::Block(const Blockchain& chain, const InputPool& inputpool, uint64_t heigh
     this->scripts.reserve(DEFAULT_SCRIPTS_PER_BLOCK);
     for (size_t ti = 0; ti < this->txs.size(); ++ti) {
         const auto& tx = this->txs[ti];
-        for (const auto& inp_idx : tx.GetInputs()) {
-            const auto& inp = inputpool.GetInput(inp_idx);
+        for (const auto& inp : tx.GetInputs()) {
             const auto& script = chain.GetOutput(inp.block_height, inp.tx_index, inp.output_index);
             this->scripts.emplace_back(ti, true, script.ScIdx());
         }
