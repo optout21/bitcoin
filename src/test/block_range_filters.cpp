@@ -11,6 +11,7 @@
 #include <test/util/setup_common.h>
 
 #include <cassert>
+#include <fstream>
 #include <tuple>
 
 #include <boost/test/unit_test.hpp>
@@ -40,11 +41,44 @@ class ScriptPool {
 public:
     static constexpr size_t SCRIPT_POOL_SIZE = 1'000'000;
 
-    ScriptPool(FastRandomContext& rng, size_t size = SCRIPT_POOL_SIZE) : rng(rng) {
+    ScriptPool(FastRandomContext& rng) : rng(rng) {}
+
+    void Generate(size_t size = SCRIPT_POOL_SIZE) {
         scripts.resize(size);
         for (size_t i = 0; i < size; ++i) {
             scripts[i] = RandomScript(rng);
         }
+    }
+
+    //! Write scripts to a binary file: uint64 count, then per script: uint32 len + bytes.
+    void Write(const std::string& path) const {
+        std::ofstream f(path, std::ios::binary);
+        uint64_t count = scripts.size();
+        f.write(reinterpret_cast<const char*>(&count), sizeof(count));
+        for (const auto& script : scripts) {
+            uint32_t len = script.size();
+            f.write(reinterpret_cast<const char*>(&len), sizeof(len));
+            f.write(reinterpret_cast<const char*>(script.data()), len);
+        }
+    }
+
+    //! Read scripts from a binary file written by Write(). Returns false on failure.
+    bool Read(const std::string& path) {
+        std::ifstream f(path, std::ios::binary);
+        if (!f) return false;
+        uint64_t count;
+        f.read(reinterpret_cast<char*>(&count), sizeof(count));
+        if (!f) return false;
+        scripts.resize(count);
+        for (uint64_t i = 0; i < count; ++i) {
+            uint32_t len;
+            f.read(reinterpret_cast<char*>(&len), sizeof(len));
+            if (!f) return false;
+            scripts[i].resize(len);
+            f.read(reinterpret_cast<char*>(scripts[i].data()), len);
+            if (!f) return false;
+        }
+        return true;
     }
 
     const Script& GetScript(size_t index) const {
@@ -388,9 +422,18 @@ class BlockChainManager {
 
 public:
     BlockChainManager(FastRandomContext& rng, size_t scriptpool_size = ScriptPool::SCRIPT_POOL_SIZE) :
-        scriptpool(rng, scriptpool_size), chain(), utxo_set(), script_index(),
+        scriptpool(rng), chain(), utxo_set(), script_index(),
         rng(rng)
     {
+        static const std::string SCRIPTPOOL_CACHE = "scriptpool_cache.bin";
+        if (!scriptpool.Read(SCRIPTPOOL_CACHE)) {
+            printf("ScriptPool cache not found, generating %ld scripts...\n", scriptpool_size);
+            scriptpool.Generate(scriptpool_size);
+            scriptpool.Write(SCRIPTPOOL_CACHE);
+            printf("ScriptPool %ld scripts written to %s\n", scriptpool.size(), SCRIPTPOOL_CACHE.c_str());
+        } else {
+            printf("ScriptPool %ld scripts loaded from %s\n", scriptpool.size(), SCRIPTPOOL_CACHE.c_str());
+        }
         AddBlock(CreateGenesisBlock());
     }
  
