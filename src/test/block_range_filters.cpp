@@ -490,55 +490,35 @@ public:
     }
 };
 
-// Index of script occurances (input or output) to blocks where they are present
+// Per-script transaction occurrence counts
 class ScriptIndex {
-    //! Map from script index to block heights (where it appears)
-    std::map<uint64_t, std::unordered_set<uint32_t>> index;
+    //! counts[script_idx] = number of tx script usages (inputs + outputs) across all blocks
+    std::vector<uint32_t> counts;
 
 public:
-    ScriptIndex() : index() {}
-
-    void Add(ScriptIdx script_idx, uint32_t block_height) {
-        if (index.find(script_idx) == index.end()) {
-            index[script_idx] = std::unordered_set<uint32_t>{};
-        }
-        index[script_idx].insert(block_height);
+    ScriptIndex() {
+        counts.resize(ScriptPool::SCRIPT_POOL_SIZE, 0);
     }
 
-    bool Contains(ScriptIdx script_idx) const {
-        return index.find(script_idx) != index.end();
+    void Add(ScriptIdx script_idx) {
+        assert(script_idx < counts.size());
+        //if (script_idx >= counts.size()) counts.resize(script_idx + 1, 0);
+        ++counts[script_idx];
     }
 
-    size_t CountBlocks(ScriptIdx script_idx) const {
-        auto it = index.find(script_idx);
-        if (it == index.end()) {
-            return 0;
-        }
-        return it->second.size();
+    uint32_t CountTxs(ScriptIdx script_idx) const {
+        //if (script_idx >= counts.size()) return 0;
+        assert(script_idx <= counts.size());
+        return counts[script_idx];
     }
 
-    std::unordered_set<uint32_t> GetBlocks(ScriptIdx script_idx) const {
-        auto it = index.find(script_idx);
-        if (it == index.end()) {
-            return std::unordered_set<uint32_t>{};
-        }
-        return it->second;
-    }
-
-    size_t size() const { return index.size(); }
+    size_t size() const { return counts.size(); }
 
     void Write(const std::string& path) const {
         std::ofstream f(path, std::ios::binary);
-        uint32_t n = index.size();
+        uint32_t n = counts.size();
         f.write(reinterpret_cast<const char*>(&n), sizeof(n));
-        for (const auto& [script_idx, heights] : index) {
-            f.write(reinterpret_cast<const char*>(&script_idx), sizeof(script_idx));
-            uint32_t nh = heights.size();
-            f.write(reinterpret_cast<const char*>(&nh), sizeof(nh));
-            for (uint32_t h : heights) {
-                f.write(reinterpret_cast<const char*>(&h), sizeof(h));
-            }
-        }
+        f.write(reinterpret_cast<const char*>(counts.data()), n * sizeof(uint32_t));
     }
 
     bool Read(const std::string& path) {
@@ -547,24 +527,9 @@ public:
         uint32_t n;
         f.read(reinterpret_cast<char*>(&n), sizeof(n));
         if (!f) return false;
-        index.clear();
-        for (uint32_t i = 0; i < n; ++i) {
-            uint64_t script_idx;
-            f.read(reinterpret_cast<char*>(&script_idx), sizeof(script_idx));
-            if (!f) return false;
-            uint32_t nh;
-            f.read(reinterpret_cast<char*>(&nh), sizeof(nh));
-            if (!f) return false;
-            auto& heights = index[script_idx];
-            heights.reserve(nh);
-            for (uint32_t j = 0; j < nh; ++j) {
-                uint32_t h;
-                f.read(reinterpret_cast<char*>(&h), sizeof(h));
-                if (!f) return false;
-                heights.insert(h);
-            }
-        }
-        return true;
+        counts.resize(n);
+        f.read(reinterpret_cast<char*>(counts.data()), n * sizeof(uint32_t));
+        return f.good();
     }
 };
 
@@ -681,6 +646,7 @@ public:
             for (uint32_t i = 0; i < to_create; ++i) {
                 AddNewBlock(TX_PER_BLOCK);
             }
+            printf("\n");
             chain.Append(CHAIN_CACHE);
             chain.Flush();  // free in-memory blocks; total_height is preserved
             utxo_set.Write(UTXOSET_CACHE);
@@ -711,8 +677,9 @@ public:
             }
         }
         if (block.height % 50 == 0) {
-            printf("Added block %d with %ld txs, size %d ; utxos: %ld \n",
+            printf("Added block %d with %ld txs, size %d ; utxos: %ld \r",
                 block.height, block.txs.size(), block.GetRoughSize(), utxo_set.size());
+                fflush(stdout);
         }
     }
 
@@ -721,10 +688,10 @@ public:
         script_index = ScriptIndex{};
         ForEachBlock([this](const Block& block) {
             for (const auto& sc : block.scripts) {
-                script_index.Add(sc.script_idx, block.height);
+                script_index.Add(sc.script_idx);
             }
         });
-        printf("Script index built: %ld entries\n", script_index.size());
+        printf("Script index built: %ld scripts\n", script_index.size());
     }
 
     Transaction CreateGenesisTx() const {
@@ -781,18 +748,18 @@ public:
         printf("Analyzing script occurence counts %d ... \n", n);
         for (auto i = 0; i < n; ++i) {
             const auto script_idx = scriptpool.PickIndexWithSkewedProb();
-            const auto count = script_index.CountBlocks(script_idx);
-            printf("  c %ld \n", count);
+            const auto count = script_index.CountTxs(script_idx);
+            printf("  c %d \n", count);
         }
     }
 
-    ScriptIdx PickScriptIndexWithDesiredBlockOccurance(size_t min, size_t max) const {
+    ScriptIdx PickScriptIndexWithDesiredTxOccurance(size_t min, size_t max) const {
         size_t tries = 0;
         while (tries < 1'000'000) {
             const auto script_idx = scriptpool.PickIndexWithSkewedProb();
-            const auto count = script_index.CountBlocks(script_idx);
+            const auto count = script_index.CountTxs(script_idx);
             if (count >= min && count <= max) {
-                printf("Picked a script with %ld block occurance (%ld -- %ld, %ld tries) \n", count, min, max, tries+1);
+                printf("Picked a script with %d tx occurance (%ld -- %ld, %ld tries) \n", count, min, max, tries+1);
                 return script_idx;
             }
             ++tries;
@@ -1084,29 +1051,29 @@ BOOST_AUTO_TEST_CASE(whole_blockchain)
 
     std::vector<ScriptIdx> scripts3;
     for (auto i = 0; i < 6; ++i) {
-        scripts3.emplace_back(manager.PickScriptIndexWithDesiredBlockOccurance(3, 6));
+        scripts3.emplace_back(manager.PickScriptIndexWithDesiredTxOccurance(3, 6));
     }
 
     for (const auto& script: scripts3) {
-        auto result1 = filter_mgr.RunBlockFilterSimulation(script);
+        (void)filter_mgr.RunBlockFilterSimulation(script);
     }
     for (auto block_range_size: block_range_sizes) {
         for (const auto& script: scripts3) {
-            auto result = filter_mgr.RunBlockRangeSimulation(block_range_size, script);
+            (void)filter_mgr.RunBlockRangeSimulation(block_range_size, script);
         }
     }
 
     std::vector<ScriptIdx> scripts20;
     for (auto i = 0; i < 6; ++i) {
-        scripts20.emplace_back(manager.PickScriptIndexWithDesiredBlockOccurance(20, 30));
+        scripts20.emplace_back(manager.PickScriptIndexWithDesiredTxOccurance(20, 30));
     }
 
     for (const auto& script: scripts20) {
-        auto result1 = filter_mgr.RunBlockFilterSimulation(script);
+        (void)filter_mgr.RunBlockFilterSimulation(script);
     }
     for (auto block_range_size: block_range_sizes) {
         for (const auto& script: scripts20) {
-            auto result = filter_mgr.RunBlockRangeSimulation(block_range_size, script);
+            (void)filter_mgr.RunBlockRangeSimulation(block_range_size, script);
         }
     }
 
