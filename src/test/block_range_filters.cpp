@@ -17,7 +17,7 @@
 #include <boost/test/unit_test.hpp>
 
 // const uint64_t BLOCK_COUNT = 20'000;
-const uint64_t BLOCK_COUNT = 20'000;
+const uint64_t BLOCK_COUNT = 10'000;
 const uint64_t SKIP_BLOCKS = 0;
 const uint64_t TX_PER_BLOCK = 3'000;
 const uint8_t HEADER_SIZE = 22;
@@ -142,8 +142,49 @@ class Transaction {
     std::vector<Output> outputs;
     uint32_t rough_size;
 
+    Transaction() : rough_size(0) {}
+
 public:
     Transaction(const Blockchain& chain, const ScriptPool& scriptpool, std::vector<Input> inputs, std::vector<Output> outputs);
+
+    void WriteTo(std::ofstream& f) const {
+        f.write(reinterpret_cast<const char*>(&rough_size), sizeof(rough_size));
+        uint16_t ni = inputs.size();
+        f.write(reinterpret_cast<const char*>(&ni), sizeof(ni));
+        for (const auto& inp : inputs) {
+            f.write(reinterpret_cast<const char*>(&inp.block_height), sizeof(inp.block_height));
+            f.write(reinterpret_cast<const char*>(&inp.tx_index),     sizeof(inp.tx_index));
+            f.write(reinterpret_cast<const char*>(&inp.output_index), sizeof(inp.output_index));
+        }
+        uint16_t no = outputs.size();
+        f.write(reinterpret_cast<const char*>(&no), sizeof(no));
+        for (const auto& out : outputs) {
+            ScriptIdx si = out.ScIdx();
+            f.write(reinterpret_cast<const char*>(&si), sizeof(si));
+        }
+    }
+
+    static Transaction ReadFrom(std::ifstream& f) {
+        Transaction tx;
+        f.read(reinterpret_cast<char*>(&tx.rough_size), sizeof(tx.rough_size));
+        uint16_t ni;
+        f.read(reinterpret_cast<char*>(&ni), sizeof(ni));
+        tx.inputs.resize(ni);
+        for (auto& inp : tx.inputs) {
+            f.read(reinterpret_cast<char*>(&inp.block_height), sizeof(inp.block_height));
+            f.read(reinterpret_cast<char*>(&inp.tx_index),     sizeof(inp.tx_index));
+            f.read(reinterpret_cast<char*>(&inp.output_index), sizeof(inp.output_index));
+        }
+        uint16_t no;
+        f.read(reinterpret_cast<char*>(&no), sizeof(no));
+        tx.outputs.reserve(no);
+        for (uint16_t i = 0; i < no; ++i) {
+            ScriptIdx si;
+            f.read(reinterpret_cast<char*>(&si), sizeof(si));
+            tx.outputs.emplace_back(si);
+        }
+        return tx;
+    }
 
     bool HasOutIndex(uint8_t outindex) const {
         return outindex < outputs.size();
@@ -184,10 +225,50 @@ public:
 public:
     static constexpr size_t DEFAULT_SCRIPTS_PER_BLOCK = 4500;
 
-    //! Create empty block
-    // Block() {}
+    Block() : height(0), total_rough_size(0) {}
 
     Block(const Blockchain& chain, uint64_t height, std::vector<Transaction> transactions, FastRandomContext& rng);
+
+    void WriteTo(std::ofstream& f) const {
+        f.write(reinterpret_cast<const char*>(&height),           sizeof(height));
+        f.write(reinterpret_cast<const char*>(blockhash.begin()), 32);
+        f.write(reinterpret_cast<const char*>(&total_rough_size), sizeof(total_rough_size));
+        uint32_t nt = txs.size();
+        f.write(reinterpret_cast<const char*>(&nt), sizeof(nt));
+        for (const auto& tx : txs) tx.WriteTo(f);
+        uint32_t ns = scripts.size();
+        f.write(reinterpret_cast<const char*>(&ns), sizeof(ns));
+        for (const auto& sc : scripts) {
+            uint8_t is_input = sc.is_input ? 1 : 0;
+            f.write(reinterpret_cast<const char*>(&sc.txindex),  sizeof(sc.txindex));
+            f.write(reinterpret_cast<const char*>(&is_input),    sizeof(is_input));
+            f.write(reinterpret_cast<const char*>(&sc.script_idx), sizeof(sc.script_idx));
+        }
+    }
+
+    static Block ReadFrom(std::ifstream& f) {
+        Block b;
+        f.read(reinterpret_cast<char*>(&b.height),           sizeof(b.height));
+        f.read(reinterpret_cast<char*>(b.blockhash.begin()), 32);
+        f.read(reinterpret_cast<char*>(&b.total_rough_size), sizeof(b.total_rough_size));
+        uint32_t nt;
+        f.read(reinterpret_cast<char*>(&nt), sizeof(nt));
+        b.txs.reserve(nt);
+        for (uint32_t i = 0; i < nt; ++i) b.txs.emplace_back(Transaction::ReadFrom(f));
+        uint32_t ns;
+        f.read(reinterpret_cast<char*>(&ns), sizeof(ns));
+        b.scripts.reserve(ns);
+        for (uint32_t i = 0; i < ns; ++i) {
+            uint16_t txindex;
+            uint8_t  is_input;
+            ScriptIdx script_idx;
+            f.read(reinterpret_cast<char*>(&txindex),    sizeof(txindex));
+            f.read(reinterpret_cast<char*>(&is_input),   sizeof(is_input));
+            f.read(reinterpret_cast<char*>(&script_idx), sizeof(script_idx));
+            b.scripts.emplace_back(txindex, is_input != 0, script_idx);
+        }
+        return b;
+    }
 
     // static Block CreateRandom(FastRandomContext& rng) {
     //     Block block;
@@ -279,6 +360,29 @@ public:
     const Block& GetBlock(uint32_t height) const {
         return blocks[height];
     }
+
+    void Write(const std::string& path) const {
+        std::ofstream f(path, std::ios::binary);
+        uint32_t n = blocks.size();
+        f.write(reinterpret_cast<const char*>(&n), sizeof(n));
+        for (const auto& block : blocks) block.WriteTo(f);
+    }
+
+    bool Read(const std::string& path) {
+        std::ifstream f(path, std::ios::binary);
+        if (!f) return false;
+        uint32_t n;
+        f.read(reinterpret_cast<char*>(&n), sizeof(n));
+        if (!f) return false;
+        blocks.clear();
+        blocks.reserve(n);
+        printf("Reading blockchain file ... (%d)\n", n);
+        for (uint32_t i = 0; i < n; ++i) {
+            blocks.emplace_back(Block::ReadFrom(f));
+            if (!f) return false;
+        }
+        return true;
+    }
 };
 
 class UtxoSet {
@@ -361,6 +465,46 @@ public:
     }
 
     size_t size() const { return index.size(); }
+
+    void Write(const std::string& path) const {
+        std::ofstream f(path, std::ios::binary);
+        uint32_t n = index.size();
+        f.write(reinterpret_cast<const char*>(&n), sizeof(n));
+        for (const auto& [script_idx, heights] : index) {
+            f.write(reinterpret_cast<const char*>(&script_idx), sizeof(script_idx));
+            uint32_t nh = heights.size();
+            f.write(reinterpret_cast<const char*>(&nh), sizeof(nh));
+            for (uint32_t h : heights) {
+                f.write(reinterpret_cast<const char*>(&h), sizeof(h));
+            }
+        }
+    }
+
+    bool Read(const std::string& path) {
+        std::ifstream f(path, std::ios::binary);
+        if (!f) return false;
+        uint32_t n;
+        f.read(reinterpret_cast<char*>(&n), sizeof(n));
+        if (!f) return false;
+        index.clear();
+        for (uint32_t i = 0; i < n; ++i) {
+            uint64_t script_idx;
+            f.read(reinterpret_cast<char*>(&script_idx), sizeof(script_idx));
+            if (!f) return false;
+            uint32_t nh;
+            f.read(reinterpret_cast<char*>(&nh), sizeof(nh));
+            if (!f) return false;
+            auto& heights = index[script_idx];
+            heights.reserve(nh);
+            for (uint32_t j = 0; j < nh; ++j) {
+                uint32_t h;
+                f.read(reinterpret_cast<char*>(&h), sizeof(h));
+                if (!f) return false;
+                heights.insert(h);
+            }
+        }
+        return true;
+    }
 };
 
 static GCSFilter BuildFilterForBlock(const Block& block, const ScriptPool& scriptpool)
@@ -420,23 +564,56 @@ class BlockChainManager {
     std::map<uint16_t, std::vector<GCSFilter>> block_range_filter_sets;
     FastRandomContext& rng;
 
+    static constexpr const char* SCRIPTPOOL_CACHE = "scriptpool_cache.bin";
+    static constexpr const char* CHAIN_CACHE      = "chain_cache.bin";
+    static constexpr const char* SCRIPTIDX_CACHE  = "script_index_cache.bin";
+
 public:
-    BlockChainManager(FastRandomContext& rng, size_t scriptpool_size = ScriptPool::SCRIPT_POOL_SIZE) :
+    BlockChainManager(FastRandomContext& rng) :
         scriptpool(rng), chain(), utxo_set(), script_index(),
         rng(rng)
     {
-        static const std::string SCRIPTPOOL_CACHE = "scriptpool_cache.bin";
+    }
+
+    void CreateOrLoadBlocks(uint32_t block_count, size_t scriptpool_size = ScriptPool::SCRIPT_POOL_SIZE) {
         if (!scriptpool.Read(SCRIPTPOOL_CACHE)) {
             printf("ScriptPool cache not found, generating %ld scripts...\n", scriptpool_size);
             scriptpool.Generate(scriptpool_size);
             scriptpool.Write(SCRIPTPOOL_CACHE);
-            printf("ScriptPool %ld scripts written to %s\n", scriptpool.size(), SCRIPTPOOL_CACHE.c_str());
+            printf("ScriptPool %ld scripts written to %s\n", scriptpool.size(), SCRIPTPOOL_CACHE);
         } else {
-            printf("ScriptPool %ld scripts loaded from %s\n", scriptpool.size(), SCRIPTPOOL_CACHE.c_str());
+            printf("ScriptPool %ld scripts loaded from %s\n", scriptpool.size(), SCRIPTPOOL_CACHE);
         }
+
+        // chain.Read() clears before loading, block_count + 1 accounts for the genesis block.
+        if (chain.Read(CHAIN_CACHE) && script_index.Read(SCRIPTIDX_CACHE)) {
+            printf("Chain %ld blocks loaded from %s\n", chain.size(), CHAIN_CACHE);
+            printf("ScriptIndex %ld entries loaded from %s\n", script_index.size(), SCRIPTIDX_CACHE);
+            if (chain.size() >= block_count + 1) {
+                printf("Using data read!\n");
+                return;
+            }
+        }
+        // Load failed or insufficient blocks — rebuild from scratch.
+        // Reset all state that may have been partially modified by the failed reads.
+        chain = Blockchain{};
+        script_index = ScriptIndex{};
+        utxo_set = UtxoSet{};
         AddBlock(CreateGenesisBlock());
+        this->CreateBlocks(block_count);
+        chain.Write(CHAIN_CACHE);
+        printf("Chain %ld blocks written to %s\n", chain.size(), CHAIN_CACHE);
+        script_index.Write(SCRIPTIDX_CACHE);
+        printf("ScriptIndex %ld entries written to %s\n", script_index.size(), SCRIPTIDX_CACHE);
     }
- 
+
+    void CreateBlocks(uint32_t block_count) {
+        printf("Creating blocks (%d) ... \n", block_count);
+        for (uint32_t i = 0; i < block_count; ++i) {
+            this->AddNewBlock(TX_PER_BLOCK);
+        }
+    }
+
     void AddBlock(const Block& block)
     {
         // printf("Adding block %d (utxos: %ld)...\n", block.height, utxo_set.size());
@@ -762,12 +939,9 @@ Block::Block(const Blockchain& chain, uint64_t height, std::vector<Transaction> 
 
 BOOST_AUTO_TEST_CASE(whole_blockchain)
 {
-    auto manager = BlockChainManager(m_rng, ScriptPool::SCRIPT_POOL_SIZE);
+    auto manager = BlockChainManager(m_rng);
 
-    printf("Creating blocks...\n");
-    for (uint64_t i = 0; i < BLOCK_COUNT; ++i) {
-        manager.AddNewBlock(TX_PER_BLOCK);
-    }
+    manager.CreateOrLoadBlocks(BLOCK_COUNT, ScriptPool::SCRIPT_POOL_SIZE);
 
     // manager.AnalyzeScriptFrequencies();
 
