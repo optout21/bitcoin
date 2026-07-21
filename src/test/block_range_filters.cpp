@@ -859,12 +859,12 @@ public:
             if (h < SKIP_BLOCKS) return;
             uint32_t fi = h - (uint32_t)SKIP_BLOCKS;
             const auto& block_filter = this->block_filters[fi];
-            total_dl += block_filter.GetEncoded().size();
+            total_dl += block_filter.GetEncoded().size(); // DL block filter
             if (block_filter.Match(script)) {
                 // filter matches, we download & check the block
                 // printf("Block filter height = %d matched!", h);
                 ++block_filter_matches;
-                total_dl += block.GetRoughSize();
+                total_dl += block.GetRoughSize(); // DL block if block filter match
                 const auto txs = block.GetTxsByScript(script_idx);
                 if (txs.empty()) {
                     printf("Block filter height = %d matched but negative! \n", h);
@@ -927,7 +927,7 @@ public:
                 cur_range_filters = 0;
                 cur_range_start = h;
                 const auto& block_range_filter = filters[range_idx];
-                total_dl += block_range_filter.GetEncoded().size();
+                total_dl += block_range_filter.GetEncoded().size(); // DL block-range filter
                 cur_range_matched = block_range_filter.Match(script);
                 if (cur_range_matched) ++block_range_filter_matches;
             }
@@ -935,10 +935,10 @@ public:
             if (!cur_range_matched) return;
 
             const auto& block_filter = this->block_filters[fi];
-            total_dl += block_filter.GetEncoded().size();
+            total_dl += block_filter.GetEncoded().size(); // DL block filter if block-range filter match
             if (block_filter.Match(script)) {
                 ++block_filter_matches;
-                total_dl += block.GetRoughSize();
+                total_dl += block.GetRoughSize(); // DL block if block filter match
                 const auto txs = block.GetTxsByScript(script_idx);
                 if (txs.empty()) {
                     printf("Block filter height = %d matched but negative! \n", h);
@@ -951,7 +951,6 @@ public:
                 cur_range_txs += txs.size();
                 total_txs += txs.size();
             }
-            total_dl += block.GetRoughSize();
         });
         finalize_range();
 
