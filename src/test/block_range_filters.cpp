@@ -147,7 +147,7 @@ class Transaction {
 public:
     Transaction(const Blockchain& chain, const ScriptPool& scriptpool, std::vector<Input> inputs, std::vector<Output> outputs);
 
-    void WriteTo(std::ofstream& f) const {
+    void WriteTo(std::ostream& f) const {
         f.write(reinterpret_cast<const char*>(&rough_size), sizeof(rough_size));
         uint16_t ni = inputs.size();
         f.write(reinterpret_cast<const char*>(&ni), sizeof(ni));
@@ -229,7 +229,7 @@ public:
 
     Block(const Blockchain& chain, uint64_t height, std::vector<Transaction> transactions, FastRandomContext& rng);
 
-    void WriteTo(std::ofstream& f) const {
+    void WriteTo(std::ostream& f) const {
         f.write(reinterpret_cast<const char*>(&height),           sizeof(height));
         f.write(reinterpret_cast<const char*>(blockhash.begin()), 32);
         f.write(reinterpret_cast<const char*>(&total_rough_size), sizeof(total_rough_size));
@@ -382,6 +382,23 @@ public:
             if (!f) return false;
         }
         return true;
+    }
+
+    //! Append blocks[from_height..end] to an existing file, updating the count at position 0.
+    //! Falls back to Write() if the file does not exist yet.
+    void Append(const std::string& path, uint32_t from_height) const {
+        std::fstream f(path, std::ios::binary | std::ios::in | std::ios::out);
+        if (!f) {
+            Write(path);
+            return;
+        }
+        uint32_t n = blocks.size();
+        f.seekp(0);
+        f.write(reinterpret_cast<const char*>(&n), sizeof(n));
+        f.seekp(0, std::ios::end);
+        for (uint32_t i = from_height; i < blocks.size(); ++i) {
+            blocks[i].WriteTo(f);
+        }
     }
 };
 
@@ -591,7 +608,9 @@ class BlockChainManager {
 
     static constexpr const char* SCRIPTPOOL_CACHE = "scriptpool_cache.bin";
     static constexpr const char* CHAIN_CACHE      = "chain_cache.bin";
+    static constexpr const char* UTXOSET_CACHE    = "utxoset_cache.bin";
     static constexpr const char* SCRIPTIDX_CACHE  = "script_index_cache.bin";
+    static constexpr uint32_t    CHUNK_SIZE        = 1000;
 
 public:
     BlockChainManager(FastRandomContext& rng) :
@@ -601,6 +620,7 @@ public:
     }
 
     void CreateOrLoadBlocks(uint32_t block_count, size_t scriptpool_size = ScriptPool::SCRIPT_POOL_SIZE) {
+        // Load or generate scriptpool
         if (!scriptpool.Read(SCRIPTPOOL_CACHE)) {
             printf("ScriptPool cache not found, generating %ld scripts...\n", scriptpool_size);
             scriptpool.Generate(scriptpool_size);
@@ -610,33 +630,50 @@ public:
             printf("ScriptPool %ld scripts loaded from %s\n", scriptpool.size(), SCRIPTPOOL_CACHE);
         }
 
-        // chain.Read() clears before loading, block_count + 1 accounts for the genesis block.
-        if (chain.Read(CHAIN_CACHE) && script_index.Read(SCRIPTIDX_CACHE)) {
-            printf("Chain %ld blocks loaded from %s\n", chain.size(), CHAIN_CACHE);
-            printf("ScriptIndex %ld entries loaded from %s\n", script_index.size(), SCRIPTIDX_CACHE);
-            if (chain.size() >= block_count + 1) {
-                printf("Using the read data!\n");
-                return;
-            }
+        // Try to resume from a previous (possibly partial) run
+        if (chain.Read(CHAIN_CACHE) && utxo_set.Read(UTXOSET_CACHE)) {
+            printf("Resumed: chain %ld blocks, utxo_set %ld entries\n", chain.size(), utxo_set.size());
+        } else {
+            // Nothing usable on disk — start from scratch
+            chain = Blockchain{};
+            utxo_set = UtxoSet{};
+            AddBlock(CreateGenesisBlock());
+            chain.Write(CHAIN_CACHE);
+            utxo_set.Write(UTXOSET_CACHE);
+            printf("Started fresh: genesis block written\n");
         }
-        // Load failed or insufficient blocks — rebuild from scratch.
-        // Reset all state that may have been partially modified by the failed reads.
-        chain = Blockchain{};
-        utxo_set = UtxoSet{};
-        AddBlock(CreateGenesisBlock());
-        this->CreateBlocks(block_count);
-        chain.Write(CHAIN_CACHE);
-        printf("Chain %ld blocks written to %s\n", chain.size(), CHAIN_CACHE);
+
+        // block_count + 1: genesis (height 0) + block_count generated blocks
+        const uint32_t target = block_count + 1;
+
+        if (chain.size() >= target) {
+            // Chain is complete; load or rebuild script index
+            if (script_index.Read(SCRIPTIDX_CACHE)) {
+                printf("ScriptIndex %ld entries loaded from %s\n", script_index.size(), SCRIPTIDX_CACHE);
+            } else {
+                BuildScriptIndex();
+                script_index.Write(SCRIPTIDX_CACHE);
+                printf("ScriptIndex %ld entries written to %s\n", script_index.size(), SCRIPTIDX_CACHE);
+            }
+            return;
+        }
+
+        // Create remaining blocks in chunks, saving after each
+        while (chain.size() < target) {
+            uint32_t chunk_start = chain.size();
+            uint32_t to_create = std::min(CHUNK_SIZE, target - (uint32_t)chain.size());
+            printf("Creating blocks %d–%d ...\n", chunk_start, chunk_start + to_create - 1);
+            for (uint32_t i = 0; i < to_create; ++i) {
+                AddNewBlock(TX_PER_BLOCK);
+            }
+            chain.Append(CHAIN_CACHE, chunk_start);
+            utxo_set.Write(UTXOSET_CACHE);
+            printf("Saved: chain %ld blocks, utxo_set %ld entries\n", chain.size(), utxo_set.size());
+        }
+
         BuildScriptIndex();
         script_index.Write(SCRIPTIDX_CACHE);
         printf("ScriptIndex %ld entries written to %s\n", script_index.size(), SCRIPTIDX_CACHE);
-    }
-
-    void CreateBlocks(uint32_t block_count) {
-        printf("Creating blocks (%d) ... \n", block_count);
-        for (uint32_t i = 0; i < block_count; ++i) {
-            this->AddNewBlock(TX_PER_BLOCK);
-        }
     }
 
     void AddBlock(const Block& block)
