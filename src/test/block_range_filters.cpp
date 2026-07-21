@@ -427,6 +427,37 @@ public:
     }
 
     size_t size() const { return vector_of_utxos.size(); }
+
+    void Write(const std::string& path) const {
+        std::ofstream f(path, std::ios::binary);
+        uint32_t n = vector_of_utxos.size();
+        f.write(reinterpret_cast<const char*>(&n), sizeof(n));
+        for (const auto& inp : vector_of_utxos) {
+            f.write(reinterpret_cast<const char*>(&inp.block_height), sizeof(inp.block_height));
+            f.write(reinterpret_cast<const char*>(&inp.tx_index),     sizeof(inp.tx_index));
+            f.write(reinterpret_cast<const char*>(&inp.output_index), sizeof(inp.output_index));
+        }
+    }
+
+    bool Read(const std::string& path) {
+        std::ifstream f(path, std::ios::binary);
+        if (!f) return false;
+        uint32_t n;
+        f.read(reinterpret_cast<char*>(&n), sizeof(n));
+        if (!f) return false;
+        vector_of_utxos.clear();
+        map_of_indices.clear();
+        vector_of_utxos.resize(n);
+        for (uint32_t i = 0; i < n; ++i) {
+            auto& inp = vector_of_utxos[i];
+            f.read(reinterpret_cast<char*>(&inp.block_height), sizeof(inp.block_height));
+            f.read(reinterpret_cast<char*>(&inp.tx_index),     sizeof(inp.tx_index));
+            f.read(reinterpret_cast<char*>(&inp.output_index), sizeof(inp.output_index));
+            if (!f) return false;
+            map_of_indices[inp] = i;
+        }
+        return true;
+    }
 };
 
 // Index of script occurances (input or output) to blocks where they are present
