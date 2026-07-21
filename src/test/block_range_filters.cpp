@@ -110,8 +110,8 @@ public:
 class Input {
 public:
     uint32_t block_height;
-    uint32_t tx_index;
-    uint32_t output_index;
+    uint16_t tx_index;
+    uint8_t output_index;
 
     bool operator<(const Input& other) const
     {
@@ -451,7 +451,7 @@ public:
                 script_index.Add(spent.ScIdx(), block.height);
             }
             // ScriptIndex: inputs: done in GenerateTxsForNextBlock
-            for (uint16_t outindex = 0; outindex < tx.GetOutputs().size(); ++outindex) {
+            for (uint8_t outindex = 0; outindex < tx.GetOutputs().size(); ++outindex) {
                 // Utxos: add new unspent
                 Input input{block.height, txindex, outindex};
                 utxo_set.Add(input);
