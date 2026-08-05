@@ -170,6 +170,19 @@ bool CCoinsViewCache::HaveCoin(const COutPoint& outpoint) const
     return (it != cacheCoins.end() && !it->second.coin.IsSpent());
 }
 
+/**
+ * Check for the existence of a coin in cache and in base.
+ * Doesn't add it to the cache if found.
+ */
+bool CCoinsViewCache::HaveCoinDontCache(const COutPoint& outpoint) const
+{
+    if (const auto it{cacheCoins.find(outpoint)}; it != cacheCoins.end()) {
+        return !it->second.coin.IsSpent();
+    } else {
+        return base->HaveCoinDontCache(outpoint);
+    }
+}
+
 bool CCoinsViewCache::HaveCoinInCache(const COutPoint &outpoint) const {
     CCoinsMap::const_iterator it = cacheCoins.find(outpoint);
     return (it != cacheCoins.end() && !it->second.coin.IsSpent());
@@ -401,6 +414,11 @@ std::optional<Coin> CCoinsViewErrorCatcher::GetCoin(const COutPoint& outpoint) c
 bool CCoinsViewErrorCatcher::HaveCoin(const COutPoint& outpoint) const
 {
     return ExecuteBackedWrapper<bool>([&]() { return CCoinsViewBacked::HaveCoin(outpoint); }, m_err_callbacks);
+}
+
+bool CCoinsViewErrorCatcher::HaveCoinDontCache(const COutPoint& outpoint) const
+{
+    return ExecuteBackedWrapper<bool>([&]() { return CCoinsViewBacked::HaveCoinDontCache(outpoint); }, m_err_callbacks);
 }
 
 std::optional<Coin> CCoinsViewErrorCatcher::PeekCoin(const COutPoint& outpoint) const
