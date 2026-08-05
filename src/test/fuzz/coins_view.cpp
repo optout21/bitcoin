@@ -90,7 +90,7 @@ void initialize_coins_view()
     static const auto testing_setup = MakeNoLogFileContext<>();
 }
 
-void TestCoinsView(FuzzedDataProvider& fuzzed_data_provider, CCoinsViewCache& coins_view_cache, CCoinsView* backend_coins_view)
+void TestCoinsView(FuzzedDataProvider& fuzzed_data_provider, CCoinsViewCache& coins_view_cache, CCoinsViewWrite* backend_coins_view)
 {
     const bool is_db{dynamic_cast<CCoinsViewDB*>(backend_coins_view) != nullptr};
     bool good_data{true};

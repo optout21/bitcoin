@@ -31,7 +31,7 @@ struct CoinsViewOptions {
 };
 
 /** CCoinsView backed by the coin database (chainstate/) */
-class CCoinsViewDB final : public CCoinsView
+class CCoinsViewDB final : public CCoinsViewWrite
 {
 protected:
     DBParams m_db_params;
