@@ -1855,7 +1855,7 @@ CoinsViews::CoinsViews(DBParams db_params, CoinsViewOptions options)
 void CoinsViews::InitCache()
 {
     AssertLockHeld(::cs_main);
-    m_cacheview = std::make_unique<CCoinsViewCache>(&m_catcherview);
+    m_cacheview = std::make_unique<CCoinsViewCache>(&m_catcherview, /*deterministic=*/false, /*log_stats=*/true);
     m_connect_block_view = std::make_unique<CoinsViewOverlay>(&*m_cacheview);
 }
 
@@ -2466,6 +2466,8 @@ bool Chainstate::ConnectBlock(const CBlock& block, BlockValidationState& state, 
     if (fEnforceBIP30 || pindex->nHeight >= BIP34_IMPLIES_BIP30_LIMIT) {
         for (const auto& tx : block.vtx) {
             for (size_t o = 0; o < tx->vout.size(); o++) {
+                // Note: there the likely case is that the new TXO doesn't exist, so it will
+                // result in a cache miss (a miss for an non-existent item).
                 if (view.HaveCoin(COutPoint(tx->GetHash(), o))) {
                     state.Invalid(BlockValidationResult::BLOCK_CONSENSUS, "bad-txns-BIP30",
                                   "tried to overwrite transaction");
