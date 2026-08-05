@@ -31,9 +31,7 @@ std::optional<Coin> CCoinsViewCache::PeekCoin(const COutPoint& outpoint) const
 CCoinsViewCache::CCoinsViewCache(CCoinsView* in_base, bool deterministic) :
     CCoinsViewBacked(in_base), m_deterministic(deterministic),
     cacheCoins(0, SaltedOutpointHasher(/*deterministic=*/deterministic), CCoinsMap::key_equal{}, &m_cache_coins_memory_resource)
-{
-    m_sentinel.second.SelfRef(m_sentinel);
-}
+{}
 
 size_t CCoinsViewCache::DynamicMemoryUsage() const {
     return memusage::DynamicUsage(cacheCoins) + cachedCoinsUsage;
@@ -96,9 +94,9 @@ void CCoinsViewCache::AddCoin(const COutPoint &outpoint, Coin&& coin, bool possi
         Assume(TrySub(cachedCoinsUsage, it->second.coin.DynamicMemoryUsage()));
     }
     it->second.coin = std::move(coin);
-    CCoinsCacheEntry::SetDirty(*it, m_sentinel);
+    CCoinsCacheEntry::SetDirty(*it);
     ++m_dirty_count;
-    if (fresh) CCoinsCacheEntry::SetFresh(*it, m_sentinel);
+    if (fresh) CCoinsCacheEntry::SetFresh(*it);
     cachedCoinsUsage += it->second.coin.DynamicMemoryUsage();
     TRACEPOINT(utxocache, add,
            outpoint.hash.data(),
@@ -112,7 +110,7 @@ void CCoinsViewCache::EmplaceCoinInternalDANGER(COutPoint&& outpoint, Coin&& coi
     const auto mem_usage{coin.DynamicMemoryUsage()};
     auto [it, inserted] = cacheCoins.try_emplace(std::move(outpoint), std::move(coin));
     if (inserted) {
-        CCoinsCacheEntry::SetDirty(*it, m_sentinel);
+        CCoinsCacheEntry::SetDirty(*it);
         ++m_dirty_count;
         cachedCoinsUsage += mem_usage;
     }
@@ -146,7 +144,7 @@ bool CCoinsViewCache::SpendCoin(const COutPoint &outpoint, Coin* moveout) {
     if (it->second.IsFresh()) {
         cacheCoins.erase(it);
     } else {
-        CCoinsCacheEntry::SetDirty(*it, m_sentinel);
+        CCoinsCacheEntry::SetDirty(*it);
         ++m_dirty_count;
         it->second.coin.Clear();
     }
@@ -188,7 +186,7 @@ void CCoinsViewCache::SetBestBlock(const uint256& in_block_hash)
 
 void CCoinsViewCache::BatchWrite(CoinsViewCacheCursor& cursor, const uint256& in_block_hash)
 {
-    for (auto it{cursor.Begin()}; it != cursor.End(); it = cursor.NextAndMaybeErase(*it)) {
+    for (auto it{cursor.Begin()}; it != cursor.End(); it.NextAndMaybeErase()) {
         if (!it->second.IsDirty()) { // TODO a cursor can only contain dirty entries
             continue;
         }
@@ -201,20 +199,20 @@ void CCoinsViewCache::BatchWrite(CoinsViewCacheCursor& cursor, const uint256& in
                 // Move the data up and mark it as dirty.
                 CCoinsCacheEntry& entry{itUs->second};
                 assert(entry.coin.DynamicMemoryUsage() == 0);
-                if (cursor.WillErase(*it)) {
+                if (cursor.WillErase(it)) {
                     // Since this entry will be erased,
                     // we can move the coin into us instead of copying it
                     entry.coin = std::move(it->second.coin);
                 } else {
                     entry.coin = it->second.coin;
                 }
-                CCoinsCacheEntry::SetDirty(*itUs, m_sentinel);
+                CCoinsCacheEntry::SetDirty(*itUs);
                 ++m_dirty_count;
                 cachedCoinsUsage += entry.coin.DynamicMemoryUsage();
                 // We can mark it FRESH in the parent if it was FRESH in the child
                 // Otherwise it might have just been flushed from the parent's cache
                 // and already exist in the grandparent
-                if (it->second.IsFresh()) CCoinsCacheEntry::SetFresh(*itUs, m_sentinel);
+                if (it->second.IsFresh()) CCoinsCacheEntry::SetFresh(*itUs);
             }
         } else {
             // Found the entry in the parent cache
@@ -235,7 +233,7 @@ void CCoinsViewCache::BatchWrite(CoinsViewCacheCursor& cursor, const uint256& in
             } else {
                 // A normal modification.
                 Assume(TrySub(cachedCoinsUsage, itUs->second.coin.DynamicMemoryUsage()));
-                if (cursor.WillErase(*it)) {
+                if (cursor.WillErase(it)) {
                     // Since this entry will be erased,
                     // we can move the coin into us instead of copying it
                     itUs->second.coin = std::move(it->second.coin);
@@ -244,7 +242,7 @@ void CCoinsViewCache::BatchWrite(CoinsViewCacheCursor& cursor, const uint256& in
                 }
                 cachedCoinsUsage += itUs->second.coin.DynamicMemoryUsage();
                 if (!itUs->second.IsDirty()) {
-                    CCoinsCacheEntry::SetDirty(*itUs, m_sentinel);
+                    CCoinsCacheEntry::SetDirty(*itUs);
                     ++m_dirty_count;
                 }
                 // NOTE: It isn't safe to mark the coin as FRESH in the parent
@@ -259,7 +257,7 @@ void CCoinsViewCache::BatchWrite(CoinsViewCacheCursor& cursor, const uint256& in
 
 void CCoinsViewCache::Flush(bool reallocate_cache)
 {
-    auto cursor{CoinsViewCacheCursor(m_dirty_count, m_sentinel, cacheCoins, /*will_erase=*/true)};
+    auto cursor{CoinsViewCacheCursor(m_dirty_count, cacheCoins, /*will_erase=*/true)};
     base->BatchWrite(cursor, m_block_hash);
     Assume(m_dirty_count == 0);
     cacheCoins.clear();
@@ -271,13 +269,9 @@ void CCoinsViewCache::Flush(bool reallocate_cache)
 
 void CCoinsViewCache::Sync()
 {
-    auto cursor{CoinsViewCacheCursor(m_dirty_count, m_sentinel, cacheCoins, /*will_erase=*/false)};
+    auto cursor{CoinsViewCacheCursor(m_dirty_count, cacheCoins, /*will_erase=*/false)};
     base->BatchWrite(cursor, m_block_hash);
     Assume(m_dirty_count == 0);
-    if (m_sentinel.second.Next() != &m_sentinel) {
-        /* BatchWrite must clear flags of all entries */
-        throw std::logic_error("Not all unspent flagged entries were cleared");
-    }
 }
 
 void CCoinsViewCache::Reset() noexcept
@@ -346,12 +340,10 @@ void CCoinsViewCache::SanityCheck() const
         // Count the number of entries we expect in the linked list.
         if (entry.IsDirty()) ++count_dirty;
     }
-    // Iterate over the linked list of flagged entries.
+    // Iterate over the flagged entries.
+    auto cursor{CoinsViewCacheCursor(m_dirty_count, cacheCoins, /*will_erase=*/true)};
     size_t count_linked = 0;
-    for (auto it = m_sentinel.second.Next(); it != &m_sentinel; it = it->second.Next()) {
-        // Verify linked list integrity.
-        assert(it->second.Next()->second.Prev() == it);
-        assert(it->second.Prev()->second.Next() == it);
+    for (auto it{cursor.Begin()}; it != cursor.End(); it.Next()) {
         // Verify they are actually flagged.
         assert(it->second.IsDirty());
         // Count the number of entries actually in the list.

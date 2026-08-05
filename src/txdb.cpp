@@ -145,7 +145,7 @@ void CCoinsViewDB::BatchWrite(CoinsViewCacheCursor& cursor, const uint256& block
             }
         }
         count++;
-        it = cursor.NextAndMaybeErase(*it);
+        it.NextAndMaybeErase();
         if (batch.ApproximateSize() > m_options.batch_write_bytes) {
             LogDebug(BCLog::COINDB, "Writing partial batch of %.2f MiB\n", batch.ApproximateSize() / double(1_MiB));
 

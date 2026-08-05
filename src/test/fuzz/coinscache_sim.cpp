@@ -155,12 +155,12 @@ public:
 
     void BatchWrite(CoinsViewCacheCursor& cursor, const uint256&) final
     {
-        for (auto it{cursor.Begin()}; it != cursor.End(); it = cursor.NextAndMaybeErase(*it)) {
+        for (auto it{cursor.Begin()}; it != cursor.End(); it.NextAndMaybeErase()) {
             if (it->second.IsDirty()) {
                 if (it->second.coin.IsSpent()) {
                     m_data.erase(it->first);
                 } else {
-                    if (cursor.WillErase(*it)) {
+                    if (cursor.WillErase(it)) {
                         m_data[it->first] = std::move(it->second.coin);
                     } else {
                         m_data[it->first] = it->second.coin;
