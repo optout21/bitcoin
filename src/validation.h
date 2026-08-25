@@ -786,7 +786,7 @@ public:
         CCoinsViewCache& view) EXCLUSIVE_LOCKS_REQUIRED(cs_main);
     //! Run the same validity checks as ConnectBlock() without mutating pindex or writing anything to disk.
     bool TestConnectBlock(const CBlock& block, BlockValidationState& state, const CBlockIndex* pindex,
-        CCoinsViewCache& view) EXCLUSIVE_LOCKS_REQUIRED(cs_main);
+        const CCoinsViewCache& view) EXCLUSIVE_LOCKS_REQUIRED(cs_main);
 
     // Apply the effects of a block disconnection on the UTXO set.
     bool DisconnectTip(BlockValidationState& state, DisconnectedBlockTransactions* disconnectpool) EXCLUSIVE_LOCKS_REQUIRED(cs_main, m_mempool->cs);

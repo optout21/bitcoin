@@ -2701,14 +2701,15 @@ bool Chainstate::ConnectBlock(const CBlock& block, BlockValidationState& state, 
 }
 
 bool Chainstate::TestConnectBlock(const CBlock& block, BlockValidationState& state, const CBlockIndex* pindex,
-                                   CCoinsViewCache& view)
+                                  const CCoinsViewCache& view)
 {
     AssertLockHeld(cs_main);
 
+    CCoinsViewCache view_dummy(&view);
     CBlockUndo blockundo;
     int nInputs = 0;
     int64_t nSigOpsCost = 0;
-    return ConnectBlockChecks(block, state, pindex, view, /*fJustCheck=*/true, blockundo, nInputs, nSigOpsCost);
+    return ConnectBlockChecks(block, state, pindex, &view_dummy, /*fJustCheck=*/true, blockundo, nInputs, nSigOpsCost);
 }
 
 CoinsCacheSizeState Chainstate::GetCoinsCacheSizeState()
@@ -4575,10 +4576,9 @@ BlockValidationState TestBlockValidity(
     index_dummy.pprev = tip;
     index_dummy.nHeight = tip->nHeight + 1;
     index_dummy.phashBlock = &block_hash;
-    CCoinsViewCache view_dummy(&chainstate.CoinsTip());
 
     // Call TestConnectBlock(), it updates, and does not clear, validation caches.
-    if (!chainstate.TestConnectBlock(block, state, &index_dummy, view_dummy)) {
+    if (!chainstate.TestConnectBlock(block, state, &index_dummy, chainstate.CoinsTip())) {
         if (state.IsValid()) NONFATAL_UNREACHABLE();
         return state;
     }
