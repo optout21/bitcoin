@@ -2514,6 +2514,7 @@ bool Chainstate::ConnectBlock(const CBlock& block, BlockValidationState& state, 
         m_last_script_check_reason_logged = script_check_reason;
     }
 
+    // Note: unused in check-only mode
     CBlockUndo blockundo;
 
     // Precomputed transaction data pointers must not be invalidated
@@ -2529,7 +2530,9 @@ bool Chainstate::ConnectBlock(const CBlock& block, BlockValidationState& state, 
     CAmount nFees = 0;
     int nInputs = 0;
     int64_t nSigOpsCost = 0;
-    blockundo.vtxundo.reserve(block.vtx.size() - 1);
+    if (!fJustCheck) {
+        blockundo.vtxundo.reserve(block.vtx.size() - 1);
+    }
     for (unsigned int i = 0; i < block.vtx.size(); i++)
     {
         if (!state.IsValid()) break;
@@ -2602,11 +2605,18 @@ bool Chainstate::ConnectBlock(const CBlock& block, BlockValidationState& state, 
             }
         }
 
-        CTxUndo undoDummy;
-        if (i > 0) {
-            blockundo.vtxundo.emplace_back();
+        if (!fJustCheck) {
+            if (i > 0) {
+                blockundo.vtxundo.emplace_back();
+                UpdateCoins(tx, view, blockundo.vtxundo.back(), pindex->nHeight);
+            } else {
+                CTxUndo undoDummy;
+                UpdateCoins(tx, view, undoDummy, pindex->nHeight);
+            }
+        } else {
+            CTxUndo undoDummy;
+            UpdateCoins(tx, view, undoDummy, pindex->nHeight);
         }
-        UpdateCoins(tx, view, i == 0 ? undoDummy : blockundo.vtxundo.back(), pindex->nHeight);
     }
     const auto time_3{SteadyClock::now()};
     m_chainman.time_connect += time_3 - time_2;
