@@ -12,7 +12,10 @@
 #include <utility>
 
 // Compare the cost of different error handling styles around BlockValidationState:
-//  1. return bool, with BlockValidationState as out parameter
+//  0. baseline: return void, no state (measures call overhead + dummy work only)
+//  1. return bool, with BlockValidationState as parameter
+//     a. out-only: leaves set the state on success too (`state = {}`)
+//     b. in-out: leaves do not touch the state on success (as in the codebase)
 //  2. return BlockValidationState
 //  3. return util::Expected<BlockValidationState, kernel::FatalError>
 //
@@ -20,7 +23,10 @@
 // level-2 functions, each calling two level-3 functions (7 functions in total).
 // Level-3 functions perform a small dummy operation and return success.
 // Functions are not inlined, so that the cost of passing / returning the
-// state across calls is measured.
+// state across calls is measured. They are also shielded from other
+// interprocedural optimizations (GCC: noipa; Clang: external linkage prevents
+// dead argument elimination), which would otherwise e.g. drop the unused
+// state parameter of style 1b, making it identical to the baseline.
 //
 // cmake -B build -DBUILD_BENCH=ON
 // cmake --build build -t bench_bitcoin
@@ -30,11 +36,18 @@
 
 #if defined(_MSC_VER)
 #define BENCH_NOINLINE __declspec(noinline)
+#elif defined(__has_attribute)
+#if __has_attribute(noipa)
+#define BENCH_NOINLINE __attribute__((noipa))
+#else
+#define BENCH_NOINLINE __attribute__((noinline))
+#endif
 #else
 #define BENCH_NOINLINE __attribute__((noinline))
 #endif
 
-namespace {
+// Named (not anonymous) namespace: external linkage, see above.
+namespace error_handling_bench {
 
 using ExpectedState = util::Expected<BlockValidationState, kernel::FatalError>;
 
@@ -43,31 +56,84 @@ constexpr uint64_t ITERATIONS{50'000'000};
 // Small dummy operation done at the leaves.
 inline void DummyOp(uint64_t& acc, uint64_t n) { acc = acc * 6364136223846793005ULL + n; }
 
-// ---- Style 1: bool return, BlockValidationState out parameter ----
+// ---- Style 0: baseline, void return, no state ----
 
-BENCH_NOINLINE bool BoolL3a(BlockValidationState& state, uint64_t& acc) { DummyOp(acc, 1); state = {}; return true; }
-BENCH_NOINLINE bool BoolL3b(BlockValidationState& state, uint64_t& acc) { DummyOp(acc, 2); state = {}; return true; }
-BENCH_NOINLINE bool BoolL3c(BlockValidationState& state, uint64_t& acc) { DummyOp(acc, 3); state = {}; return true; }
-BENCH_NOINLINE bool BoolL3d(BlockValidationState& state, uint64_t& acc) { DummyOp(acc, 4); state = {}; return true; }
+BENCH_NOINLINE void VoidL3a(uint64_t& acc) { DummyOp(acc, 1); }
+BENCH_NOINLINE void VoidL3b(uint64_t& acc) { DummyOp(acc, 2); }
+BENCH_NOINLINE void VoidL3c(uint64_t& acc) { DummyOp(acc, 3); }
+BENCH_NOINLINE void VoidL3d(uint64_t& acc) { DummyOp(acc, 4); }
 
-BENCH_NOINLINE bool BoolL2a(BlockValidationState& state, uint64_t& acc)
+BENCH_NOINLINE void VoidL2a(uint64_t& acc)
 {
-    if (!BoolL3a(state, acc)) return false;
-    if (!BoolL3b(state, acc)) return false;
+    VoidL3a(acc);
+    VoidL3b(acc);
+}
+
+BENCH_NOINLINE void VoidL2b(uint64_t& acc)
+{
+    VoidL3c(acc);
+    VoidL3d(acc);
+}
+
+BENCH_NOINLINE void VoidL1(uint64_t& acc)
+{
+    VoidL2a(acc);
+    VoidL2b(acc);
+}
+
+// ---- Style 1a: bool return, BlockValidationState out-only parameter (leaves set it on success) ----
+
+BENCH_NOINLINE bool BoolOutL3a(BlockValidationState& state, uint64_t& acc) { DummyOp(acc, 1); state = {}; return true; }
+BENCH_NOINLINE bool BoolOutL3b(BlockValidationState& state, uint64_t& acc) { DummyOp(acc, 2); state = {}; return true; }
+BENCH_NOINLINE bool BoolOutL3c(BlockValidationState& state, uint64_t& acc) { DummyOp(acc, 3); state = {}; return true; }
+BENCH_NOINLINE bool BoolOutL3d(BlockValidationState& state, uint64_t& acc) { DummyOp(acc, 4); state = {}; return true; }
+
+BENCH_NOINLINE bool BoolOutL2a(BlockValidationState& state, uint64_t& acc)
+{
+    if (!BoolOutL3a(state, acc)) return false;
+    if (!BoolOutL3b(state, acc)) return false;
     return true;
 }
 
-BENCH_NOINLINE bool BoolL2b(BlockValidationState& state, uint64_t& acc)
+BENCH_NOINLINE bool BoolOutL2b(BlockValidationState& state, uint64_t& acc)
 {
-    if (!BoolL3c(state, acc)) return false;
-    if (!BoolL3d(state, acc)) return false;
+    if (!BoolOutL3c(state, acc)) return false;
+    if (!BoolOutL3d(state, acc)) return false;
     return true;
 }
 
-BENCH_NOINLINE bool BoolL1(BlockValidationState& state, uint64_t& acc)
+BENCH_NOINLINE bool BoolOutL1(BlockValidationState& state, uint64_t& acc)
 {
-    if (!BoolL2a(state, acc)) return false;
-    if (!BoolL2b(state, acc)) return false;
+    if (!BoolOutL2a(state, acc)) return false;
+    if (!BoolOutL2b(state, acc)) return false;
+    return true;
+}
+
+// ---- Style 1b: bool return, BlockValidationState in-out parameter (untouched on success) ----
+
+BENCH_NOINLINE bool BoolInOutL3a(BlockValidationState& state, uint64_t& acc) { DummyOp(acc, 1); return true; }
+BENCH_NOINLINE bool BoolInOutL3b(BlockValidationState& state, uint64_t& acc) { DummyOp(acc, 2); return true; }
+BENCH_NOINLINE bool BoolInOutL3c(BlockValidationState& state, uint64_t& acc) { DummyOp(acc, 3); return true; }
+BENCH_NOINLINE bool BoolInOutL3d(BlockValidationState& state, uint64_t& acc) { DummyOp(acc, 4); return true; }
+
+BENCH_NOINLINE bool BoolInOutL2a(BlockValidationState& state, uint64_t& acc)
+{
+    if (!BoolInOutL3a(state, acc)) return false;
+    if (!BoolInOutL3b(state, acc)) return false;
+    return true;
+}
+
+BENCH_NOINLINE bool BoolInOutL2b(BlockValidationState& state, uint64_t& acc)
+{
+    if (!BoolInOutL3c(state, acc)) return false;
+    if (!BoolInOutL3d(state, acc)) return false;
+    return true;
+}
+
+BENCH_NOINLINE bool BoolInOutL1(BlockValidationState& state, uint64_t& acc)
+{
+    if (!BoolInOutL2a(state, acc)) return false;
+    if (!BoolInOutL2b(state, acc)) return false;
     return true;
 }
 
@@ -151,7 +217,34 @@ BENCH_NOINLINE ExpectedState ExpL1(uint64_t& acc)
     return BlockValidationState{};
 }
 
-} // namespace
+} // namespace error_handling_bench
+
+using namespace error_handling_bench;
+
+static void ErrorHandlingBaselineVoid(benchmark::Bench& bench)
+{
+    uint64_t acc{0};
+    bench.batch(ITERATIONS).unit("call").run([&] {
+        for (uint64_t i{0}; i < ITERATIONS; ++i) {
+            VoidL1(acc);
+        }
+        ankerl::nanobench::doNotOptimizeAway(acc);
+    });
+}
+
+static void ErrorHandlingBoolOutState(benchmark::Bench& bench)
+{
+    uint64_t acc{0};
+    uint64_t ok{0};
+    bench.batch(ITERATIONS).unit("call").run([&] {
+        for (uint64_t i{0}; i < ITERATIONS; ++i) {
+            BlockValidationState state;
+            if (BoolOutL1(state, acc) && state.IsValid()) ++ok;
+        }
+        ankerl::nanobench::doNotOptimizeAway(acc);
+    });
+    assert(ok % ITERATIONS == 0);
+}
 
 static void ErrorHandlingBoolInOutState(benchmark::Bench& bench)
 {
@@ -160,7 +253,7 @@ static void ErrorHandlingBoolInOutState(benchmark::Bench& bench)
     bench.batch(ITERATIONS).unit("call").run([&] {
         for (uint64_t i{0}; i < ITERATIONS; ++i) {
             BlockValidationState state;
-            if (BoolL1(state, acc) && state.IsValid()) ++ok;
+            if (BoolInOutL1(state, acc) && state.IsValid()) ++ok;
         }
         ankerl::nanobench::doNotOptimizeAway(acc);
     });
@@ -193,6 +286,8 @@ static void ErrorHandlingReturnExpectedState(benchmark::Bench& bench)
     assert(ok % ITERATIONS == 0);
 }
 
+BENCHMARK(ErrorHandlingBaselineVoid);
+BENCHMARK(ErrorHandlingBoolOutState);
 BENCHMARK(ErrorHandlingBoolInOutState);
 BENCHMARK(ErrorHandlingReturnState);
 BENCHMARK(ErrorHandlingReturnExpectedState);
