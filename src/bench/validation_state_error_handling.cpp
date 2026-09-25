@@ -6,9 +6,11 @@
 #include <consensus/validation.h>
 #include <kernel/notifications_interface.h>
 #include <util/expected.h>
+#include <util/translation.h>
 
 #include <cassert>
 #include <cstdint>
+#include <numeric>
 #include <utility>
 #include <variant>
 
@@ -24,11 +26,13 @@
 //
 // Each style uses a 3-level call tree: one level-1 function calling two
 // level-2 functions, each calling two level-3 functions (7 functions in total).
-// Level-3 functions perform a small dummy operation and return success,
-// except for every FAIL_RATE-th level-3 call, which fails with an invalid
-// state (in the way of the given style). Failures are propagated to the top
-// immediately, skipping the remaining calls, so each failing level-3 call
-// makes exactly one top-level call fail.
+// Level-3 functions perform a small dummy operation, which has one of three
+// outcomes: valid (most calls), invalid (every INVALID_RATE-th level-3 call),
+// or fatal error (every ERROR_RATE-th level-3 call). Each style reports the
+// outcome in its own way. Styles 1 and 2 cannot represent a fatal error, as
+// BlockValidationState no longer has an error mode; they report it as invalid.
+// Failures are propagated to the top immediately, skipping the remaining
+// calls, so each failing level-3 call makes exactly one top-level call fail.
 // Functions are not inlined, so that the cost of passing / returning the
 // state across calls is measured. They are also shielded from other
 // interprocedural optimizations (GCC: noipa; Clang: external linkage prevents
@@ -61,28 +65,111 @@ using BlockValidationFailure = std::variant<BlockValidationState, kernel::FatalE
 using VoidExpected = util::Expected<void, BlockValidationFailure>;
 
 constexpr uint64_t ITERATIONS{50'000'000};
-// Every FAIL_RATE-th level-3 call fails.
-constexpr uint64_t FAIL_RATE{1000};
+// Every INVALID_RATE-th level-3 call is invalid.
+constexpr uint64_t INVALID_RATE{1000};
+// Every ERROR_RATE-th level-3 call has a fatal error. Offset by half a period,
+// so that invalid and error calls never coincide.
+constexpr uint64_t ERROR_RATE{1000};
+constexpr uint64_t ERROR_OFFSET{ERROR_RATE / 2};
+static_assert(ERROR_RATE >= 2);
+static_assert(ERROR_OFFSET % std::gcd(INVALID_RATE, ERROR_RATE) != 0, "invalid and error calls must never coincide");
+
+enum class Outcome { VALID, INVALID, FATAL_ERROR };
 
 // Small dummy operation done at the leaves. Counts the calls in `counter`, and
-// returns false (failure) for every FAIL_RATE-th call.
-[[nodiscard]] inline bool DummyOp(uint64_t& acc, uint64_t& counter, uint64_t n)
+// decides the outcome from it.
+[[nodiscard]] inline Outcome DummyOp(uint64_t& acc, uint64_t& counter, uint64_t n)
 {
     acc = acc * 6364136223846793005ULL + n;
-    return ++counter % FAIL_RATE != 0;
+    ++counter;
+    if (counter % INVALID_RATE == 0) return Outcome::INVALID;
+    if (counter % ERROR_RATE == ERROR_OFFSET) return Outcome::FATAL_ERROR;
+    return Outcome::VALID;
 }
 
-// Mark the state invalid, as a failing leaf does.
-inline bool Fail(BlockValidationState& state)
+inline bool SetInvalid(BlockValidationState& state)
 {
-    return state.Invalid(BlockValidationResult::BLOCK_CONSENSUS, "bad-dummy-failure");
+    return state.Invalid(BlockValidationResult::BLOCK_CONSENSUS, "bad-dummy-invalid");
+}
+
+// BlockValidationState cannot represent a fatal error: styles 1 and 2 report it as invalid.
+inline bool SetErrorAsInvalid(BlockValidationState& state)
+{
+    return state.Invalid(BlockValidationResult::BLOCK_CONSENSUS, "dummy-fatal-error");
 }
 
 inline BlockValidationState InvalidState()
 {
     BlockValidationState state;
-    Fail(state);
+    SetInvalid(state);
     return state;
+}
+
+inline BlockValidationState ErrorAsInvalidState()
+{
+    BlockValidationState state;
+    SetErrorAsInvalid(state);
+    return state;
+}
+
+// Receives the fatalError notifications; the default implementation does nothing.
+kernel::Notifications g_notifications;
+
+inline util::Unexpected<kernel::FatalError> RaiseError()
+{
+    return kernel::FatalError::Raise(g_notifications, Untranslated("dummy fatal error"));
+}
+
+// Leaf results for each style, from the outcome of DummyOp().
+
+inline bool BoolOutLeaf(BlockValidationState& state, Outcome outcome)
+{
+    switch (outcome) {
+    case Outcome::VALID: state = {}; return true;
+    case Outcome::INVALID: return SetInvalid(state);
+    case Outcome::FATAL_ERROR: return SetErrorAsInvalid(state);
+    }
+    assert(false);
+}
+
+inline bool BoolInOutLeaf(BlockValidationState& state, Outcome outcome)
+{
+    switch (outcome) {
+    case Outcome::VALID: return true;
+    case Outcome::INVALID: return SetInvalid(state);
+    case Outcome::FATAL_ERROR: return SetErrorAsInvalid(state);
+    }
+    assert(false);
+}
+
+inline BlockValidationState StateLeaf(Outcome outcome)
+{
+    switch (outcome) {
+    case Outcome::VALID: return {};
+    case Outcome::INVALID: return InvalidState();
+    case Outcome::FATAL_ERROR: return ErrorAsInvalidState();
+    }
+    assert(false);
+}
+
+inline ExpectedState ExpLeaf(Outcome outcome)
+{
+    switch (outcome) {
+    case Outcome::VALID: return BlockValidationState{};
+    case Outcome::INVALID: return InvalidState();
+    case Outcome::FATAL_ERROR: return RaiseError();
+    }
+    assert(false);
+}
+
+inline VoidExpected VoidExpLeaf(Outcome outcome)
+{
+    switch (outcome) {
+    case Outcome::VALID: return {};
+    case Outcome::INVALID: return util::Unexpected{InvalidState()};
+    case Outcome::FATAL_ERROR: return RaiseError();
+    }
+    assert(false);
 }
 
 // ---- Style 0: baseline, void return, no state ----
@@ -112,10 +199,10 @@ BENCH_NOINLINE void VoidL1(uint64_t& acc, uint64_t& counter)
 
 // ---- Style 1a: bool return, BlockValidationState out-only parameter (leaves set it on success) ----
 
-BENCH_NOINLINE bool BoolOutL3a(BlockValidationState& state, uint64_t& acc, uint64_t& counter) { if (!DummyOp(acc, counter, 1)) return Fail(state); state = {}; return true; }
-BENCH_NOINLINE bool BoolOutL3b(BlockValidationState& state, uint64_t& acc, uint64_t& counter) { if (!DummyOp(acc, counter, 2)) return Fail(state); state = {}; return true; }
-BENCH_NOINLINE bool BoolOutL3c(BlockValidationState& state, uint64_t& acc, uint64_t& counter) { if (!DummyOp(acc, counter, 3)) return Fail(state); state = {}; return true; }
-BENCH_NOINLINE bool BoolOutL3d(BlockValidationState& state, uint64_t& acc, uint64_t& counter) { if (!DummyOp(acc, counter, 4)) return Fail(state); state = {}; return true; }
+BENCH_NOINLINE bool BoolOutL3a(BlockValidationState& state, uint64_t& acc, uint64_t& counter) { return BoolOutLeaf(state, DummyOp(acc, counter, 1)); }
+BENCH_NOINLINE bool BoolOutL3b(BlockValidationState& state, uint64_t& acc, uint64_t& counter) { return BoolOutLeaf(state, DummyOp(acc, counter, 2)); }
+BENCH_NOINLINE bool BoolOutL3c(BlockValidationState& state, uint64_t& acc, uint64_t& counter) { return BoolOutLeaf(state, DummyOp(acc, counter, 3)); }
+BENCH_NOINLINE bool BoolOutL3d(BlockValidationState& state, uint64_t& acc, uint64_t& counter) { return BoolOutLeaf(state, DummyOp(acc, counter, 4)); }
 
 BENCH_NOINLINE bool BoolOutL2a(BlockValidationState& state, uint64_t& acc, uint64_t& counter)
 {
@@ -140,10 +227,10 @@ BENCH_NOINLINE bool BoolOutL1(BlockValidationState& state, uint64_t& acc, uint64
 
 // ---- Style 1b: bool return, BlockValidationState in-out parameter (untouched on success) ----
 
-BENCH_NOINLINE bool BoolInOutL3a(BlockValidationState& state, uint64_t& acc, uint64_t& counter) { if (!DummyOp(acc, counter, 1)) return Fail(state); return true; }
-BENCH_NOINLINE bool BoolInOutL3b(BlockValidationState& state, uint64_t& acc, uint64_t& counter) { if (!DummyOp(acc, counter, 2)) return Fail(state); return true; }
-BENCH_NOINLINE bool BoolInOutL3c(BlockValidationState& state, uint64_t& acc, uint64_t& counter) { if (!DummyOp(acc, counter, 3)) return Fail(state); return true; }
-BENCH_NOINLINE bool BoolInOutL3d(BlockValidationState& state, uint64_t& acc, uint64_t& counter) { if (!DummyOp(acc, counter, 4)) return Fail(state); return true; }
+BENCH_NOINLINE bool BoolInOutL3a(BlockValidationState& state, uint64_t& acc, uint64_t& counter) { return BoolInOutLeaf(state, DummyOp(acc, counter, 1)); }
+BENCH_NOINLINE bool BoolInOutL3b(BlockValidationState& state, uint64_t& acc, uint64_t& counter) { return BoolInOutLeaf(state, DummyOp(acc, counter, 2)); }
+BENCH_NOINLINE bool BoolInOutL3c(BlockValidationState& state, uint64_t& acc, uint64_t& counter) { return BoolInOutLeaf(state, DummyOp(acc, counter, 3)); }
+BENCH_NOINLINE bool BoolInOutL3d(BlockValidationState& state, uint64_t& acc, uint64_t& counter) { return BoolInOutLeaf(state, DummyOp(acc, counter, 4)); }
 
 BENCH_NOINLINE bool BoolInOutL2a(BlockValidationState& state, uint64_t& acc, uint64_t& counter)
 {
@@ -168,10 +255,10 @@ BENCH_NOINLINE bool BoolInOutL1(BlockValidationState& state, uint64_t& acc, uint
 
 // ---- Style 2: return BlockValidationState ----
 
-BENCH_NOINLINE BlockValidationState StateL3a(uint64_t& acc, uint64_t& counter) { if (!DummyOp(acc, counter, 1)) return InvalidState(); return {}; }
-BENCH_NOINLINE BlockValidationState StateL3b(uint64_t& acc, uint64_t& counter) { if (!DummyOp(acc, counter, 2)) return InvalidState(); return {}; }
-BENCH_NOINLINE BlockValidationState StateL3c(uint64_t& acc, uint64_t& counter) { if (!DummyOp(acc, counter, 3)) return InvalidState(); return {}; }
-BENCH_NOINLINE BlockValidationState StateL3d(uint64_t& acc, uint64_t& counter) { if (!DummyOp(acc, counter, 4)) return InvalidState(); return {}; }
+BENCH_NOINLINE BlockValidationState StateL3a(uint64_t& acc, uint64_t& counter) { return StateLeaf(DummyOp(acc, counter, 1)); }
+BENCH_NOINLINE BlockValidationState StateL3b(uint64_t& acc, uint64_t& counter) { return StateLeaf(DummyOp(acc, counter, 2)); }
+BENCH_NOINLINE BlockValidationState StateL3c(uint64_t& acc, uint64_t& counter) { return StateLeaf(DummyOp(acc, counter, 3)); }
+BENCH_NOINLINE BlockValidationState StateL3d(uint64_t& acc, uint64_t& counter) { return StateLeaf(DummyOp(acc, counter, 4)); }
 
 BENCH_NOINLINE BlockValidationState StateL2a(uint64_t& acc, uint64_t& counter)
 {
@@ -196,10 +283,10 @@ BENCH_NOINLINE BlockValidationState StateL1(uint64_t& acc, uint64_t& counter)
 
 // ---- Style 3: return util::Expected<BlockValidationState, kernel::FatalError> ----
 
-BENCH_NOINLINE ExpectedState ExpL3a(uint64_t& acc, uint64_t& counter) { if (!DummyOp(acc, counter, 1)) return InvalidState(); return BlockValidationState{}; }
-BENCH_NOINLINE ExpectedState ExpL3b(uint64_t& acc, uint64_t& counter) { if (!DummyOp(acc, counter, 2)) return InvalidState(); return BlockValidationState{}; }
-BENCH_NOINLINE ExpectedState ExpL3c(uint64_t& acc, uint64_t& counter) { if (!DummyOp(acc, counter, 3)) return InvalidState(); return BlockValidationState{}; }
-BENCH_NOINLINE ExpectedState ExpL3d(uint64_t& acc, uint64_t& counter) { if (!DummyOp(acc, counter, 4)) return InvalidState(); return BlockValidationState{}; }
+BENCH_NOINLINE ExpectedState ExpL3a(uint64_t& acc, uint64_t& counter) { return ExpLeaf(DummyOp(acc, counter, 1)); }
+BENCH_NOINLINE ExpectedState ExpL3b(uint64_t& acc, uint64_t& counter) { return ExpLeaf(DummyOp(acc, counter, 2)); }
+BENCH_NOINLINE ExpectedState ExpL3c(uint64_t& acc, uint64_t& counter) { return ExpLeaf(DummyOp(acc, counter, 3)); }
+BENCH_NOINLINE ExpectedState ExpL3d(uint64_t& acc, uint64_t& counter) { return ExpLeaf(DummyOp(acc, counter, 4)); }
 
 BENCH_NOINLINE ExpectedState ExpL2a(uint64_t& acc, uint64_t& counter)
 {
@@ -248,10 +335,10 @@ BENCH_NOINLINE ExpectedState ExpL1(uint64_t& acc, uint64_t& counter)
 
 // ---- Style 4: return util::Expected<void, std::variant<BlockValidationState, kernel::FatalError>> ----
 
-BENCH_NOINLINE VoidExpected VoidExpL3a(uint64_t& acc, uint64_t& counter) { if (!DummyOp(acc, counter, 1)) return util::Unexpected{InvalidState()}; return {}; }
-BENCH_NOINLINE VoidExpected VoidExpL3b(uint64_t& acc, uint64_t& counter) { if (!DummyOp(acc, counter, 2)) return util::Unexpected{InvalidState()}; return {}; }
-BENCH_NOINLINE VoidExpected VoidExpL3c(uint64_t& acc, uint64_t& counter) { if (!DummyOp(acc, counter, 3)) return util::Unexpected{InvalidState()}; return {}; }
-BENCH_NOINLINE VoidExpected VoidExpL3d(uint64_t& acc, uint64_t& counter) { if (!DummyOp(acc, counter, 4)) return util::Unexpected{InvalidState()}; return {}; }
+BENCH_NOINLINE VoidExpected VoidExpL3a(uint64_t& acc, uint64_t& counter) { return VoidExpLeaf(DummyOp(acc, counter, 1)); }
+BENCH_NOINLINE VoidExpected VoidExpL3b(uint64_t& acc, uint64_t& counter) { return VoidExpLeaf(DummyOp(acc, counter, 2)); }
+BENCH_NOINLINE VoidExpected VoidExpL3c(uint64_t& acc, uint64_t& counter) { return VoidExpLeaf(DummyOp(acc, counter, 3)); }
+BENCH_NOINLINE VoidExpected VoidExpL3d(uint64_t& acc, uint64_t& counter) { return VoidExpLeaf(DummyOp(acc, counter, 4)); }
 
 BENCH_NOINLINE VoidExpected VoidExpL2a(uint64_t& acc, uint64_t& counter)
 {
@@ -274,12 +361,26 @@ BENCH_NOINLINE VoidExpected VoidExpL1(uint64_t& acc, uint64_t& counter)
     return {};
 }
 
-// Each failing level-3 call makes exactly one top-level call fail.
+// Each failing level-3 call makes exactly one top-level call fail, so the
+// failure counts follow from the number of level-3 calls.
+uint64_t ExpectedInvalidCount(uint64_t counter) { return counter / INVALID_RATE; }
+uint64_t ExpectedErrorCount(uint64_t counter) { return (counter + ERROR_RATE - ERROR_OFFSET) / ERROR_RATE; }
+
+// For styles that report fatal errors as invalid (styles 1 and 2).
 void CheckCounts(uint64_t ok, uint64_t failed, uint64_t counter)
 {
     assert(failed > 0);
     assert((ok + failed) % ITERATIONS == 0);
-    assert(failed == counter / FAIL_RATE);
+    assert(failed == ExpectedInvalidCount(counter) + ExpectedErrorCount(counter));
+}
+
+// For styles that distinguish invalid and fatal error (styles 3 and 4).
+void CheckCounts(uint64_t ok, uint64_t invalid, uint64_t error, uint64_t counter)
+{
+    assert(invalid > 0 && error > 0);
+    assert((ok + invalid + error) % ITERATIONS == 0);
+    assert(invalid == ExpectedInvalidCount(counter));
+    assert(error == ExpectedErrorCount(counter));
 }
 
 } // namespace error_handling_bench
@@ -362,18 +463,21 @@ static void ErrorHandlingReturnExpectedState(benchmark::Bench& bench)
     uint64_t acc{0};
     uint64_t counter{0};
     uint64_t ok{0};
-    uint64_t failed{0};
+    uint64_t invalid{0};
+    uint64_t error{0};
     bench.batch(ITERATIONS).unit("call").run([&] {
         for (uint64_t i{0}; i < ITERATIONS; ++i) {
-            if (auto res{ExpL1(acc, counter)}; res && res->IsValid()) {
+            if (auto res{ExpL1(acc, counter)}; !res) {
+                ++error;
+            } else if (res->IsValid()) {
                 ++ok;
             } else {
-                ++failed;
+                ++invalid;
             }
         }
         ankerl::nanobench::doNotOptimizeAway(acc);
     });
-    CheckCounts(ok, failed, counter);
+    CheckCounts(ok, invalid, error, counter);
 }
 
 static void ErrorHandlingReturnVoidExpected(benchmark::Bench& bench)
@@ -381,18 +485,21 @@ static void ErrorHandlingReturnVoidExpected(benchmark::Bench& bench)
     uint64_t acc{0};
     uint64_t counter{0};
     uint64_t ok{0};
-    uint64_t failed{0};
+    uint64_t invalid{0};
+    uint64_t error{0};
     bench.batch(ITERATIONS).unit("call").run([&] {
         for (uint64_t i{0}; i < ITERATIONS; ++i) {
-            if (VoidExpL1(acc, counter)) {
+            if (auto res{VoidExpL1(acc, counter)}; res) {
                 ++ok;
+            } else if (std::holds_alternative<BlockValidationState>(res.error())) {
+                ++invalid;
             } else {
-                ++failed;
+                ++error;
             }
         }
         ankerl::nanobench::doNotOptimizeAway(acc);
     });
-    CheckCounts(ok, failed, counter);
+    CheckCounts(ok, invalid, error, counter);
 }
 
 BENCHMARK(ErrorHandlingBaselineVoid);
