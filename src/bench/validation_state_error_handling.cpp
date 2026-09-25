@@ -11,6 +11,7 @@
 #include <cassert>
 #include <cstdint>
 #include <numeric>
+#include <stdexcept>
 #include <utility>
 #include <variant>
 
@@ -23,6 +24,7 @@
 //  3. return util::Expected<BlockValidationState, kernel::FatalError>
 //  4. return util::Expected<void, std::variant<BlockValidationState, kernel::FatalError>>
 //     (nothing on success; the invalid state or the fatal error on failure)
+//  5. return BlockValidationState (valid or invalid), throw on fatal error
 //
 // Each style uses a 3-level call tree: one level-1 function calling two
 // level-2 functions, each calling two level-3 functions (7 functions in total).
@@ -158,6 +160,24 @@ inline ExpectedState ExpLeaf(Outcome outcome)
     case Outcome::VALID: return BlockValidationState{};
     case Outcome::INVALID: return InvalidState();
     case Outcome::FATAL_ERROR: return RaiseError();
+    }
+    assert(false);
+}
+
+// Thrown on fatal error by style 5. kernel::FatalError itself cannot be
+// thrown, as it is not copyable.
+class FatalErrorException : public std::runtime_error
+{
+public:
+    using std::runtime_error::runtime_error;
+};
+
+inline BlockValidationState ThrowLeaf(Outcome outcome)
+{
+    switch (outcome) {
+    case Outcome::VALID: return {};
+    case Outcome::INVALID: return InvalidState();
+    case Outcome::FATAL_ERROR: throw FatalErrorException{RaiseError().error().message()};
     }
     assert(false);
 }
@@ -361,6 +381,34 @@ BENCH_NOINLINE VoidExpected VoidExpL1(uint64_t& acc, uint64_t& counter)
     return {};
 }
 
+// ---- Style 5: return BlockValidationState, throw on fatal error ----
+
+BENCH_NOINLINE BlockValidationState ThrowL3a(uint64_t& acc, uint64_t& counter) { return ThrowLeaf(DummyOp(acc, counter, 1)); }
+BENCH_NOINLINE BlockValidationState ThrowL3b(uint64_t& acc, uint64_t& counter) { return ThrowLeaf(DummyOp(acc, counter, 2)); }
+BENCH_NOINLINE BlockValidationState ThrowL3c(uint64_t& acc, uint64_t& counter) { return ThrowLeaf(DummyOp(acc, counter, 3)); }
+BENCH_NOINLINE BlockValidationState ThrowL3d(uint64_t& acc, uint64_t& counter) { return ThrowLeaf(DummyOp(acc, counter, 4)); }
+
+BENCH_NOINLINE BlockValidationState ThrowL2a(uint64_t& acc, uint64_t& counter)
+{
+    if (auto state{ThrowL3a(acc, counter)}; !state.IsValid()) return state;
+    if (auto state{ThrowL3b(acc, counter)}; !state.IsValid()) return state;
+    return {};
+}
+
+BENCH_NOINLINE BlockValidationState ThrowL2b(uint64_t& acc, uint64_t& counter)
+{
+    if (auto state{ThrowL3c(acc, counter)}; !state.IsValid()) return state;
+    if (auto state{ThrowL3d(acc, counter)}; !state.IsValid()) return state;
+    return {};
+}
+
+BENCH_NOINLINE BlockValidationState ThrowL1(uint64_t& acc, uint64_t& counter)
+{
+    if (auto state{ThrowL2a(acc, counter)}; !state.IsValid()) return state;
+    if (auto state{ThrowL2b(acc, counter)}; !state.IsValid()) return state;
+    return {};
+}
+
 // Each failing level-3 call makes exactly one top-level call fail, so the
 // failure counts follow from the number of level-3 calls.
 uint64_t ExpectedInvalidCount(uint64_t counter) { return counter / INVALID_RATE; }
@@ -374,7 +422,7 @@ void CheckCounts(uint64_t ok, uint64_t failed, uint64_t counter)
     assert(failed == ExpectedInvalidCount(counter) + ExpectedErrorCount(counter));
 }
 
-// For styles that distinguish invalid and fatal error (styles 3 and 4).
+// For styles that distinguish invalid and fatal error (styles 3, 4 and 5).
 void CheckCounts(uint64_t ok, uint64_t invalid, uint64_t error, uint64_t counter)
 {
     assert(invalid > 0 && error > 0);
@@ -502,9 +550,34 @@ static void ErrorHandlingReturnVoidExpected(benchmark::Bench& bench)
     CheckCounts(ok, invalid, error, counter);
 }
 
+static void ErrorHandlingReturnStateThrow(benchmark::Bench& bench)
+{
+    uint64_t acc{0};
+    uint64_t counter{0};
+    uint64_t ok{0};
+    uint64_t invalid{0};
+    uint64_t error{0};
+    bench.batch(ITERATIONS).unit("call").run([&] {
+        for (uint64_t i{0}; i < ITERATIONS; ++i) {
+            try {
+                if (ThrowL1(acc, counter).IsValid()) {
+                    ++ok;
+                } else {
+                    ++invalid;
+                }
+            } catch (const FatalErrorException&) {
+                ++error;
+            }
+        }
+        ankerl::nanobench::doNotOptimizeAway(acc);
+    });
+    CheckCounts(ok, invalid, error, counter);
+}
+
 BENCHMARK(ErrorHandlingBaselineVoid);
 BENCHMARK(ErrorHandlingBoolOutState);
 BENCHMARK(ErrorHandlingBoolInOutState);
 BENCHMARK(ErrorHandlingReturnState);
 BENCHMARK(ErrorHandlingReturnExpectedState);
 BENCHMARK(ErrorHandlingReturnVoidExpected);
+BENCHMARK(ErrorHandlingReturnStateThrow);
