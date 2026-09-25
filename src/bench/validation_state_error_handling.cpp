@@ -10,6 +10,7 @@
 #include <cassert>
 #include <cstdint>
 #include <utility>
+#include <variant>
 
 // Compare the cost of different error handling styles around BlockValidationState:
 //  0. baseline: return void, no state (measures call overhead + dummy work only)
@@ -18,6 +19,8 @@
 //     b. in-out: leaves do not touch the state on success (as in the codebase)
 //  2. return BlockValidationState
 //  3. return util::Expected<BlockValidationState, kernel::FatalError>
+//  4. return util::Expected<void, std::variant<BlockValidationState, kernel::FatalError>>
+//     (nothing on success; the invalid state or the fatal error on failure)
 //
 // Each style uses a 3-level call tree: one level-1 function calling two
 // level-2 functions, each calling two level-3 functions (7 functions in total).
@@ -50,6 +53,8 @@
 namespace error_handling_bench {
 
 using ExpectedState = util::Expected<BlockValidationState, kernel::FatalError>;
+using BlockValidationFailure = std::variant<BlockValidationState, kernel::FatalError>;
+using VoidExpected = util::Expected<void, BlockValidationFailure>;
 
 constexpr uint64_t ITERATIONS{50'000'000};
 
@@ -217,6 +222,34 @@ BENCH_NOINLINE ExpectedState ExpL1(uint64_t& acc)
     return BlockValidationState{};
 }
 
+// ---- Style 4: return util::Expected<void, std::variant<BlockValidationState, kernel::FatalError>> ----
+
+BENCH_NOINLINE VoidExpected VoidExpL3a(uint64_t& acc) { DummyOp(acc, 1); return {}; }
+BENCH_NOINLINE VoidExpected VoidExpL3b(uint64_t& acc) { DummyOp(acc, 2); return {}; }
+BENCH_NOINLINE VoidExpected VoidExpL3c(uint64_t& acc) { DummyOp(acc, 3); return {}; }
+BENCH_NOINLINE VoidExpected VoidExpL3d(uint64_t& acc) { DummyOp(acc, 4); return {}; }
+
+BENCH_NOINLINE VoidExpected VoidExpL2a(uint64_t& acc)
+{
+    if (auto res{VoidExpL3a(acc)}; !res) return util::Unexpected{std::move(res.error())};
+    if (auto res{VoidExpL3b(acc)}; !res) return util::Unexpected{std::move(res.error())};
+    return {};
+}
+
+BENCH_NOINLINE VoidExpected VoidExpL2b(uint64_t& acc)
+{
+    if (auto res{VoidExpL3c(acc)}; !res) return util::Unexpected{std::move(res.error())};
+    if (auto res{VoidExpL3d(acc)}; !res) return util::Unexpected{std::move(res.error())};
+    return {};
+}
+
+BENCH_NOINLINE VoidExpected VoidExpL1(uint64_t& acc)
+{
+    if (auto res{VoidExpL2a(acc)}; !res) return util::Unexpected{std::move(res.error())};
+    if (auto res{VoidExpL2b(acc)}; !res) return util::Unexpected{std::move(res.error())};
+    return {};
+}
+
 } // namespace error_handling_bench
 
 using namespace error_handling_bench;
@@ -286,8 +319,22 @@ static void ErrorHandlingReturnExpectedState(benchmark::Bench& bench)
     assert(ok % ITERATIONS == 0);
 }
 
+static void ErrorHandlingReturnVoidExpected(benchmark::Bench& bench)
+{
+    uint64_t acc{0};
+    uint64_t ok{0};
+    bench.batch(ITERATIONS).unit("call").run([&] {
+        for (uint64_t i{0}; i < ITERATIONS; ++i) {
+            if (VoidExpL1(acc)) ++ok;
+        }
+        ankerl::nanobench::doNotOptimizeAway(acc);
+    });
+    assert(ok % ITERATIONS == 0);
+}
+
 BENCHMARK(ErrorHandlingBaselineVoid);
 BENCHMARK(ErrorHandlingBoolOutState);
 BENCHMARK(ErrorHandlingBoolInOutState);
 BENCHMARK(ErrorHandlingReturnState);
 BENCHMARK(ErrorHandlingReturnExpectedState);
+BENCHMARK(ErrorHandlingReturnVoidExpected);
