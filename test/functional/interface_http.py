@@ -360,6 +360,7 @@ class HTTPBasicsTest (BitcoinTestFramework):
         # waitforblockheight was responded to first, and then getblockcount
         # which includes the block added after the request was made
         chunks = res.split(b'"result":')
+        assert len(chunks) >= 2
         assert chunks[1].startswith(b'{"hash":')
         if with_invalid_second_request:
             # The response to the in-flight first request is sent before the
@@ -367,6 +368,7 @@ class HTTPBasicsTest (BitcoinTestFramework):
             # request could have been rejected much earlier.
             assert res.index(b"HTTP/1.1 200") < res.index(b"HTTP/1.1 400")
         else:
+            assert len(chunks) >= 3
             assert chunks[2].startswith(bytes(f'{tip_height + 1}', 'utf8'))
 
 
