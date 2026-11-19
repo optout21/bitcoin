@@ -335,8 +335,13 @@ void CScriptWitness::CopyFrom(const CScriptWitness& other)
 
 std::span<const unsigned char> CScriptWitness::operator[](size_t index) const noexcept
 {
-    Assume(index < size());
-    auto it = begin();
+    // Read the header and decode the number of elements once, both to check the index and to find
+    // the first element. Out-of-range access returns an empty span, rather than reading past the end.
+    const auto data = Data();
+    if (!Assume(!data.empty())) return {};
+    const auto [count, prefix] = DecodeCompactSize(data);
+    if (!Assume(index < count)) return {};
+    Iterator it{data.subspan(prefix)};
     for (size_t i = 0; i < index; ++i) ++it;
     return *it;
 }

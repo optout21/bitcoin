@@ -607,14 +607,26 @@ class CScriptWitness
     static constexpr size_t HEADER_SIZE{4};
 
     /** The serialization of the stack (empty for an empty stack). As it was produced by this class,
-     *  ReadCompactSize cannot fail on it, so the accessors below are noexcept. This relies on the
-     *  number of elements and their sizes not exceeding MAX_SIZE, which holds for deserialized
-     *  stacks, and in practice for stacks constructed from vectors.
+     *  its CompactSizes are canonical and complete, so the accessors below decode them with
+     *  DecodeCompactSize, without checks, and are noexcept.
      */
     std::span<const std::byte> Data() const noexcept
     {
         if (!m_data) return {};
         return {m_data.get() + HEADER_SIZE, ReadLE32(m_data.get())};
+    }
+    /** Decode the CompactSize at the start of data, which must be part of a serialization produced
+     *  by this class. Unlike ReadCompactSize, this does not check for canonical encoding, truncation,
+     *  or MAX_SIZE, as none of these can fail on such data. Returns the decoded value and the size
+     *  of its encoding. The value fits in size_t, as it is bounded by the size of the allocation.
+     */
+    static std::pair<size_t, size_t> DecodeCompactSize(std::span<const std::byte> data) noexcept
+    {
+        const uint8_t first{std::to_integer<uint8_t>(data[0])};
+        if (first < 253) [[likely]] return {first, 1};
+        if (first == 253) return {ReadLE16(data.data() + 1), 3};
+        if (first == 254) return {ReadLE32(data.data() + 1), 5};
+        return {static_cast<size_t>(ReadLE64(data.data() + 1)), 9};
     }
     /** Allocate m_data for a non-empty stack whose serialization has the given size, and write the
      *  header. Returns where the serialization goes, which the caller must fill. */
@@ -641,18 +653,16 @@ public:
         Iterator() noexcept = default;
         value_type operator*() const noexcept
         {
-            SpanReader reader{m_rest};
-            const auto len = ReadCompactSize(reader);
-            // What the reader has left starts with the element. The serialization is std::byte, but elements are
-            // returned as unsigned char, like other script data.
-            return UCharSpanCast(m_rest.last(reader.size()).first(len));
+            const auto [len, prefix] = DecodeCompactSize(m_rest);
+            // The element follows its size. The serialization is std::byte, but elements are returned as
+            // unsigned char, like other script data.
+            return UCharSpanCast(m_rest.subspan(prefix, len));
         }
         Iterator& operator++() noexcept
         {
-            SpanReader reader{m_rest};
-            const auto len = ReadCompactSize(reader);
-            // Skip the element, which is at the start of what the reader has left.
-            m_rest = m_rest.last(reader.size() - len);
+            const auto [len, prefix] = DecodeCompactSize(m_rest);
+            // Skip the element's size and the element itself.
+            m_rest = m_rest.subspan(prefix + len);
             return *this;
         }
         Iterator operator++(int) noexcept { auto ret{*this}; ++*this; return ret; }
@@ -680,17 +690,14 @@ public:
     size_t size() const noexcept
     {
         if (!m_data) return 0;
-        SpanReader reader{Data()};
-        return ReadCompactSize(reader);
+        return DecodeCompactSize(Data()).first;
     }
     Iterator begin() const noexcept LIFETIMEBOUND
     {
         if (!m_data) return Iterator{};
         const auto data = Data();
-        SpanReader reader{data};
-        ReadCompactSize(reader);
         // The elements are what follows the number of elements.
-        return Iterator{data.last(reader.size())};
+        return Iterator{data.subspan(DecodeCompactSize(data).second)};
     }
     Iterator end() const noexcept LIFETIMEBOUND
     {
