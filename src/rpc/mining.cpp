@@ -419,7 +419,7 @@ static RPCMethod generateblock()
         block.vtx.insert(block.vtx.end(), txs.begin(), txs.end());
         RegenerateCommitments(block, chainman);
 
-        if (BlockValidationState state{TestBlockValidity(chainman.ActiveChainstate(), block, /*check_pow=*/false, /*check_merkle_root=*/false)}; !state.IsValid()) {
+        if (BlockTemplateValidationState state{TestBlockValidity(chainman.ActiveChainstate(), block, /*check_pow=*/false, /*check_merkle_root=*/false)}; !state.IsValid()) {
             throw JSONRPCError(RPC_VERIFY_ERROR, strprintf("TestBlockValidity failed: %s", state.ToString()));
         }
     }
@@ -616,7 +616,8 @@ static RPCMethod getprioritisedtransactions()
 
 
 // NOTE: Assumes a conclusive result; if result is inconclusive, it must be handled by caller
-static UniValue BIP22ValidationResult(const BlockValidationState& state)
+template <typename Result>
+static UniValue BIP22ValidationResult(const ValidationState<Result>& state)
 {
     if (state.IsValid())
         return UniValue::VNULL;

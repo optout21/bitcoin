@@ -12,6 +12,7 @@
 #include <checkqueue.h>
 #include <coins.h>
 #include <consensus/amount.h>
+#include <consensus/validation.h>
 #include <cuckoocache.h>
 #include <deploymentstatus.h>
 #include <kernel/chain.h>
@@ -391,6 +392,23 @@ public:
 bool CheckBlock(const CBlock& block, BlockValidationState& state, const Consensus::Params& consensusParams, bool fCheckPOW = true, bool fCheckMerkleRoot = true);
 
 /**
+ * Result of TestBlockValidity(): any BlockValidationResult value (converted with
+ * ToBlockTemplateValidationResult()), plus results only relevant for checking block
+ * templates / proposals, which are not applicable to blocks received from peers.
+ * The extra values are chosen to not collide with BlockValidationResult values.
+ */
+enum class BlockTemplateValidationResult : std::underlying_type_t<BlockValidationResult> {
+    BLOCK_RESULT_UNSET = 0,     //!< initial value. Block has not yet been rejected
+};
+
+constexpr BlockTemplateValidationResult ToBlockTemplateValidationResult(BlockValidationResult result)
+{
+    return static_cast<BlockTemplateValidationResult>(result);
+}
+
+class BlockTemplateValidationState : public ValidationState<BlockTemplateValidationResult> {};
+
+/**
  * Verify a block, including transactions.
  *
  * @param[in]   block       The block we want to process. Must connect to the
@@ -407,7 +425,7 @@ bool CheckBlock(const CBlock& block, BlockValidationState& state, const Consensu
  *
  * For signets the challenge verification is skipped when check_pow is false.
  */
-BlockValidationState TestBlockValidity(
+BlockTemplateValidationState TestBlockValidity(
     Chainstate& chainstate,
     const CBlock& block,
     bool check_pow,

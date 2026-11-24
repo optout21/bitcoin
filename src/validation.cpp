@@ -4548,24 +4548,24 @@ MempoolAcceptResult ChainstateManager::ProcessTransaction(const CTransactionRef&
 }
 
 
-BlockValidationState TestBlockValidity(
+static BlockTemplateValidationState ToBlockTemplateValidationState(const BlockValidationState& state)
+{
+    BlockTemplateValidationState template_state;
+    if (state.GetResult() != BlockValidationResult::BLOCK_RESULT_UNSET) {
+        template_state.Invalid(ToBlockTemplateValidationResult(state.GetResult()), state.GetRejectReason(), state.GetDebugMessage());
+    }
+    if (state.IsError()) template_state.Error(state.GetRejectReason());
+    return template_state;
+}
+
+static BlockValidationState TestBlockValidityInner(
     Chainstate& chainstate,
     const CBlock& block,
+    CBlockIndex* tip,
     const bool check_pow,
-    const bool check_merkle_root)
+    const bool check_merkle_root) EXCLUSIVE_LOCKS_REQUIRED(cs_main)
 {
-    // Lock must be held throughout this function for two reasons:
-    // 1. We don't want the tip to change during several of the validation steps
-    // 2. To prevent a CheckBlock() race condition for fChecked, see ProcessNewBlock()
-    AssertLockHeld(chainstate.m_chainman.GetMutex());
-
     BlockValidationState state;
-    CBlockIndex* tip{Assert(chainstate.m_chain.Tip())};
-
-    if (block.hashPrevBlock != *Assert(tip->phashBlock)) {
-        state.Invalid({}, "inconclusive-not-best-prevblk");
-        return state;
-    }
 
     // For signets CheckBlock() verifies the challenge iff fCheckPow is set.
     if (!CheckBlock(block, state, chainstate.m_chainman.GetConsensus(), /*fCheckPow=*/check_pow, /*fCheckMerkleRoot=*/check_merkle_root)) {
@@ -4619,6 +4619,28 @@ BlockValidationState TestBlockValidity(
     if (!state.IsValid()) NONFATAL_UNREACHABLE();
 
     return state;
+}
+
+BlockTemplateValidationState TestBlockValidity(
+    Chainstate& chainstate,
+    const CBlock& block,
+    const bool check_pow,
+    const bool check_merkle_root)
+{
+    // Lock must be held throughout this function for two reasons:
+    // 1. We don't want the tip to change during several of the validation steps
+    // 2. To prevent a CheckBlock() race condition for fChecked, see ProcessNewBlock()
+    AssertLockHeld(chainstate.m_chainman.GetMutex());
+
+    CBlockIndex* tip{Assert(chainstate.m_chain.Tip())};
+
+    if (block.hashPrevBlock != *Assert(tip->phashBlock)) {
+        BlockTemplateValidationState state;
+        state.Invalid({}, "inconclusive-not-best-prevblk");
+        return state;
+    }
+
+    return ToBlockTemplateValidationState(TestBlockValidityInner(chainstate, block, tip, check_pow, check_merkle_root));
 }
 
 /* This function is called from the RPC code for pruneblockchain */

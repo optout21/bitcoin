@@ -60,6 +60,7 @@ enum class TxValidationResult {
   * provider of the block should be banned/ignored/disconnected/etc.
   * These are much more granular than the rejection codes, which may be more
   * useful for some other use-cases.
+  * Values must stay below 0x100, see BlockTemplateValidationResult.
   */
 enum class BlockValidationResult {
     BLOCK_RESULT_UNSET = 0,  //!< initial value. Block has not yet been rejected
