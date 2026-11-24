@@ -4636,7 +4636,7 @@ BlockTemplateValidationState TestBlockValidity(
 
     if (block.hashPrevBlock != *Assert(tip->phashBlock)) {
         BlockTemplateValidationState state;
-        state.Invalid({}, "inconclusive-not-best-prevblk");
+        state.Invalid(BlockTemplateValidationResult::BLOCK_PREV_NOT_TIP, "inconclusive-not-best-prevblk");
         return state;
     }
 

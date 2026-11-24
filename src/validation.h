@@ -399,6 +399,7 @@ bool CheckBlock(const CBlock& block, BlockValidationState& state, const Consensu
  */
 enum class BlockTemplateValidationResult : std::underlying_type_t<BlockValidationResult> {
     BLOCK_RESULT_UNSET = 0,     //!< initial value. Block has not yet been rejected
+    BLOCK_PREV_NOT_TIP = 0x100, //!< The block's parent is not the current chain tip
 };
 
 constexpr BlockTemplateValidationResult ToBlockTemplateValidationResult(BlockValidationResult result)

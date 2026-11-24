@@ -9,6 +9,7 @@
 #include <consensus/consensus.h>
 #include <consensus/merkle.h>
 #include <consensus/tx_verify.h>
+#include <consensus/validation.h>
 #include <interfaces/mining.h>
 #include <interfaces/types.h>
 #include <kernel/chainparams.h>
@@ -965,6 +966,24 @@ BOOST_AUTO_TEST_CASE(CreateNewBlock_validity)
     TestPrioritisedMining(scriptPubKey, txFirst);
 
     TestSigOpsAdjustedWeightChunkLimit(scriptPubKey, txFirst);
+
+    {
+        // A block whose parent is not the current tip is rejected by TestBlockValidity
+        const std::unique_ptr<BlockTemplate> stale_template{mining->createNewBlock(options, /*cooldown=*/false)};
+        BOOST_REQUIRE(stale_template);
+        CBlock stale_block{stale_template->getBlock()};
+        // Ensure the tip is not genesis
+        const auto& genesis_hash{m_node.chainman->GetParams().GetConsensus().hashGenesisBlock};
+        BOOST_REQUIRE_NE(stale_block.hashPrevBlock, genesis_hash);
+        // Point the block at genesis, so its parent is not the tip
+        stale_block.hashPrevBlock = genesis_hash;
+        BOOST_REQUIRE_NE(stale_block.hashPrevBlock, m_node.chainman->ActiveChain().Tip()->GetBlockHash());
+        const BlockTemplateValidationState state{TestBlockValidity(m_node.chainman->ActiveChainstate(), stale_block,
+                                                                    /*check_pow=*/false, /*check_merkle_root=*/false)};
+        BOOST_CHECK(state.IsInvalid());
+        BOOST_CHECK(state.GetResult() == BlockTemplateValidationResult::BLOCK_PREV_NOT_TIP);
+        BOOST_CHECK_EQUAL(state.GetRejectReason(), "inconclusive-not-best-prevblk");
+    }
 }
 
 BOOST_AUTO_TEST_CASE(block_template_manager)
