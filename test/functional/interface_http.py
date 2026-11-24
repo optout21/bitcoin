@@ -163,6 +163,7 @@ class HTTPBasicsTest (BitcoinTestFramework):
         self.check_invalid_http_version()
         self.check_whitespace_in_headers()
         self.check_connection_limit()
+        self.check_connection_limit_idle_clients()
         self.check_pipelined_data_is_throttled()
         self.check_slow_read_throttle()
 
@@ -709,6 +710,38 @@ class HTTPBasicsTest (BitcoinTestFramework):
             # Close all remaining connections for clean up
             for client in connections:
                 client.close_sock()
+
+    def check_connection_limit_idle_clients(self):
+        self.log.info("Check a connection over the limit while all slots are held by idle keep-alive clients")
+        LIMIT = 4
+        # Disable the idle timeout, so that it can't free a slot.
+        self.restart_node(0, extra_args=["-rpcservertimeout=0", "-rest", f"-rpcmaxconnections={LIMIT}"])
+        # Close the persistent HTTP connection to this node, see check_connection_limit().
+        self.node._rpc = self.node.create_new_rpc_connection(mode="AUTHPROXY")
+
+        GENESIS_HASH = "0f9188f13cb7b2c71f2a335e3a4fc328bf5beb436012afca590b1a11466e2206"
+        connections = []
+        for _ in range(LIMIT):
+            conn = BitcoinHTTPConnection(self.node)
+            # Keep-alive client: the connection stays open after the reply.
+            assert GENESIS_HASH in conn.get('/rest/blockhashbyheight/0.json', connection_header='keep-alive').read().decode()
+            connections.append(conn)
+
+        # Let all clients be idle for a while.
+        time.sleep(1)
+
+        # A new connection is over the limit. The idle clients keep their
+        # slots, so it is not accepted.
+        conn = BitcoinHTTPConnection(self.node)
+        conn.set_timeout(5)
+        assert_raises(TimeoutError, lambda: conn.get('/rest/blockhashbyheight/0.json').read())
+
+        for client in connections:
+            assert not client.sock_closed()
+
+        # Clean up
+        for client in connections + [conn]:
+            client.close_sock()
 
 
     def check_pipelined_data_is_throttled(self):
