@@ -858,6 +858,96 @@ BOOST_AUTO_TEST_CASE(http_should_disconnect_tests)
     }
 }
 
+BOOST_AUTO_TEST_CASE(http_is_evictable_tests)
+{
+    struct Client : HTTPRemoteClient {
+        Client(std::unique_ptr<Sock> socket = CreateSock(0, 0, 0))
+            : HTTPRemoteClient{/*id=*/0, /*addr=*/CService(), /*socket=*/std::move(socket)} {}
+        using HTTPRemoteClient::MutateRecvBuffer;
+    };
+    // Prevent the clock from actually progressing during this scope.
+    const FakeSteadyClock clock;
+    constexpr auto min_idle{HTTP_MIN_IDLE_FOR_EVICTION};
+    const auto now{MockableSteadyClock::now()};
+
+    {
+        // A new connection that has not sent a request yet is never evicted.
+        auto fresh{std::make_shared<Client>()};
+        BOOST_CHECK(!fresh->IsEvictable(now + 1h, min_idle));
+    }
+
+    {
+        // A keep-alive client whose reply has been sent can be evicted, but
+        // only once it has been idle for at least min_idle.
+        auto keepalive{std::make_shared<Client>(std::make_unique<ZeroSock>())};
+        keepalive->MutateRecvBuffer().append("GET / HTTP/1.1\nHost: 127.0.0.1\n\n");
+        {
+            std::unique_ptr request{HTTPRemoteClient::TryReadRequest(keepalive)};
+            BOOST_REQUIRE(request);
+            // Not while a worker is handling the request.
+            BOOST_CHECK(!keepalive->IsEvictable(now + 1h, min_idle));
+            request->WriteReply(HTTP_OK);
+        }
+        BOOST_CHECK(!keepalive->IsFlaggedForDisconnect());
+        BOOST_CHECK_EQUAL(keepalive->GetIdleSince().time_since_epoch().count(), now.time_since_epoch().count());
+        BOOST_CHECK(!keepalive->IsEvictable(now, min_idle));
+        BOOST_CHECK(!keepalive->IsEvictable(now + min_idle - 1ms, min_idle));
+        BOOST_CHECK( keepalive->IsEvictable(now + min_idle, min_idle));
+
+        // Not once it has started sending its next request.
+        keepalive->MutateRecvBuffer().append("GET / HTTP/1.1\n");
+        BOOST_CHECK(!keepalive->IsEvictable(now + min_idle, min_idle));
+        keepalive->MutateRecvBuffer().clear();
+
+        // Not once it is flagged for disconnection anyway.
+        keepalive->FlagForDisconnect();
+        BOOST_CHECK(keepalive->IsFlaggedForDisconnect());
+        BOOST_CHECK(!keepalive->IsEvictable(now + min_idle, min_idle));
+    }
+
+    {
+        // A client without keep-alive is flagged for disconnection once its
+        // reply has been sent, so it doesn't need to be evicted.
+        auto closing{std::make_shared<Client>(std::make_unique<ZeroSock>())};
+        closing->MutateRecvBuffer().append("GET / HTTP/1.0\n\n");
+        {
+            std::unique_ptr request{HTTPRemoteClient::TryReadRequest(closing)};
+            BOOST_REQUIRE(request);
+            request->WriteReply(HTTP_OK);
+        }
+        BOOST_CHECK(closing->IsFlaggedForDisconnect());
+        BOOST_CHECK(!closing->IsEvictable(now + min_idle, min_idle));
+    }
+}
+
+BOOST_AUTO_TEST_CASE(http_close_on_reply_when_connections_waiting_tests)
+{
+    struct Client : HTTPRemoteClient {
+        explicit Client(const std::atomic_bool* connections_waiting)
+            : HTTPRemoteClient{/*id=*/0, /*addr=*/CService(), /*socket=*/std::make_unique<ZeroSock>(), connections_waiting} {}
+        using HTTPRemoteClient::MutateRecvBuffer;
+    };
+    std::atomic_bool connections_waiting{false};
+
+    for (const bool waiting : {false, true}) {
+        connections_waiting = waiting;
+        // A keep-alive HTTP 1.1 client
+        auto client{std::make_shared<Client>(&connections_waiting)};
+        BOOST_CHECK_EQUAL(client->ConnectionsWaiting(), waiting);
+        client->MutateRecvBuffer().append("GET / HTTP/1.1\nHost: 127.0.0.1\n\n");
+        {
+            std::unique_ptr request{HTTPRemoteClient::TryReadRequest(client)};
+            BOOST_REQUIRE(request);
+            request->WriteReply(HTTP_OK);
+        }
+        // The reply has been sent (ZeroSock accepts everything). While
+        // connections are waiting, the connection is closed after it instead
+        // of being kept alive.
+        BOOST_CHECK(!client->ReadyToSend());
+        BOOST_CHECK_EQUAL(client->IsFlaggedForDisconnect(), waiting);
+    }
+}
+
 BOOST_AUTO_TEST_CASE(http_server_socket_tests)
 {
     // Hard code the timestamp for the Date header in the HTTP response

@@ -27,6 +27,7 @@
 #include <util/time.h>
 #include <util/translation.h>
 
+#include <algorithm>
 #include <condition_variable>
 #include <cstdio>
 #include <cstdlib>
@@ -597,7 +598,23 @@ void HTTPRequest::WriteReply(HTTPStatusCode status, std::span<const std::byte> r
         keep_alive = false;
     }
 
-    if (std::shared_ptr client{m_client.lock()}) {
+    std::shared_ptr client{m_client.lock()};
+    if (keep_alive && client && client->ConnectionsWaiting()) {
+        // The server is at -rpcmaxconnections and other connections are
+        // waiting for a free slot: close this connection after the reply, so
+        // that one of them can be accepted. Telling the client in the reply
+        // avoids the race of evicting an idle connection that the client is
+        // about to reuse.
+        res.headers.RemoveAll("Connection");
+        res.headers.Write("Connection", "close");
+        keep_alive = false;
+        LogDebug(BCLog::HTTP,
+                 "Closing connection to HTTP client %s (id=%llu) after the reply, as connections are waiting",
+                 client->GetOrigin(),
+                 client->GetId());
+    }
+
+    if (client) {
         client->Send(res, reply_body, keep_alive);
     }
 }
@@ -877,7 +894,7 @@ void HTTPServer::NewSockAccepted(std::unique_ptr<Sock>&& sock, const CService& a
 
     const Id id{GetNewId()};
 
-    m_connected.push_back(std::make_shared<HTTPRemoteClient>(id, addr, std::move(sock)));
+    m_connected.push_back(std::make_shared<HTTPRemoteClient>(id, addr, std::move(sock), &m_connections_waiting));
     // Report back to the main thread
     m_connected_size.fetch_add(1, std::memory_order_relaxed);
 
@@ -981,34 +998,85 @@ void HTTPRemoteClient::Receive()
 void HTTPServer::SocketHandlerListening(const Sock::EventsPerSock& events_per_sock)
 {
     if (m_stop_accepting) return;
+    bool making_room{false};
     for (const auto& sock : m_listen) {
         if (m_interrupt_net) {
             return;
         }
         const auto it = events_per_sock.find(sock);
         if (it != events_per_sock.end() && it->second.occurred & Sock::RecvEvent) {
-            // Drain all pending connections from this socket up to the limit.
-            // Stop early if the kernel queue is empty (AcceptConnection returns null)
-            // or if accepting the last connection brought us to the limit.
-            while (GetConnectionsCount() < static_cast<size_t>(m_rpcmaxconnections)) {
-                CService addr_accepted;
-                auto sock_accepted{AcceptConnection(*sock, addr_accepted)};
-                if (!sock_accepted) break;
-                NewSockAccepted(std::move(sock_accepted), addr_accepted);
+            if (GetConnectionsCount() < static_cast<size_t>(m_rpcmaxconnections)) {
+                // Drain all pending connections from this socket up to the limit.
+                // Stop early if the kernel queue is empty (AcceptConnection returns null)
+                // or if accepting the last connection brought us to the limit.
+                while (GetConnectionsCount() < static_cast<size_t>(m_rpcmaxconnections)) {
+                    CService addr_accepted;
+                    auto sock_accepted{AcceptConnection(*sock, addr_accepted)};
+                    if (!sock_accepted) break;
+                    NewSockAccepted(std::move(sock_accepted), addr_accepted);
+                }
+            } else if (!making_room) {
+                // A connection is waiting, but we are at the limit. Make room
+                // by evicting the client that has been idle the longest, if
+                // any. Its slot is freed by DisconnectClients() at the end of
+                // this I/O loop iteration, and the waiting connection is
+                // accepted in the next one. Evict at most one client per
+                // iteration, since we don't know how many connections are
+                // waiting.
+                making_room = MakeRoomForConnection();
             }
         }
     }
+}
+
+std::shared_ptr<HTTPRemoteClient> HTTPServer::FindClientToEvict(MockableSteadyClock::time_point now) const
+{
+    std::shared_ptr<HTTPRemoteClient> oldest;
+    for (const auto& client : m_connected) {
+        if (!client->IsEvictable(now, HTTP_MIN_IDLE_FOR_EVICTION)) continue;
+        if (!oldest || client->GetIdleSince() < oldest->GetIdleSince()) {
+            oldest = client;
+        }
+    }
+    return oldest;
+}
+
+bool HTTPServer::MakeRoomForConnection()
+{
+    // A client that is already flagged frees its slot in this I/O loop
+    // iteration, so there is no need to evict another one.
+    if (std::ranges::any_of(m_connected, [](const auto& client) { return client->IsFlaggedForDisconnect(); })) {
+        return true;
+    }
+
+    const auto now{MockableSteadyClock::now()};
+    const std::shared_ptr<HTTPRemoteClient> client{FindClientToEvict(now)};
+    if (!client) return false;
+
+    LogDebug(BCLog::HTTP,
+             "HTTP connection limit (%d) reached with a new connection waiting, "
+             "evicting idle client %s (id=%llu, idle for %dms)",
+             m_rpcmaxconnections,
+             client->GetOrigin(),
+             client->GetId(),
+             Ticks<std::chrono::milliseconds>(now - client->GetIdleSince()));
+    client->FlagForDisconnect();
+    return true;
 }
 
 HTTPServer::IOReadiness HTTPServer::GenerateWaitSockets() const
 {
     IOReadiness io_readiness;
 
-    // If the server is already handling its max connected clients count,
-    // don't bother checking the listening sockets for new inbound connections.
-    // Leave them in the kernel's queue until space in the application opens
-    // up (or the client times out on its own).
-    if (GetConnectionsCount() < static_cast<size_t>(m_rpcmaxconnections)) {
+    // Check the listening sockets for new inbound connections if there is
+    // room for them. If the server is already handling its max connected
+    // clients count, only check them if an idle client could be evicted to
+    // make room (see SocketHandlerListening()). Otherwise, leave new
+    // connections in the kernel's queue until space in the application opens
+    // up (or the client times out on its own): polling a listening socket with
+    // a connection we can't accept would turn the I/O loop into a busy loop.
+    if (GetConnectionsCount() < static_cast<size_t>(m_rpcmaxconnections) ||
+        (!m_stop_accepting && FindClientToEvict(MockableSteadyClock::now()))) {
         for (const auto& sock : m_listen) {
             io_readiness.events_per_sock.emplace(sock, Sock::Events{Sock::RecvEvent});
         }
@@ -1078,7 +1146,25 @@ void HTTPServer::ThreadSocketHandler()
 
         // Disconnect any clients that have been flagged.
         DisconnectClients();
+
+        // Let replies close their connections while others are waiting.
+        UpdateConnectionsWaiting();
     }
+}
+
+void HTTPServer::UpdateConnectionsWaiting()
+{
+    bool waiting{false};
+    if (!m_stop_accepting && GetConnectionsCount() >= static_cast<size_t>(m_rpcmaxconnections)) {
+        for (const auto& sock : m_listen) {
+            Sock::Event occurred{0};
+            if (sock->Wait(/*timeout=*/0ms, Sock::RecvEvent, &occurred) && (occurred & Sock::RecvEvent)) {
+                waiting = true;
+                break;
+            }
+        }
+    }
+    m_connections_waiting = waiting;
 }
 
 std::unique_ptr<HTTPRequest> HTTPRemoteClient::TryReadRequest(const std::shared_ptr<HTTPRemoteClient>& client)
@@ -1216,6 +1302,19 @@ bool HTTPRemoteClient::ShouldDisconnect(MockableSteadyClock::time_point now, std
         // No reason to disconnect.
         return false;
     }
+}
+
+bool HTTPRemoteClient::IsEvictable(MockableSteadyClock::time_point now, std::chrono::milliseconds min_idle) const
+{
+    // m_connection_busy is set when any data is received and only cleared once
+    // a response has been completely sent, so a client that is not busy has
+    // had all its requests answered and has not started a new one since.
+    // m_req_busy and m_recv_buffer are checked as well, to be safe.
+    return !m_disconnect &&
+           !m_req_busy &&
+           !m_connection_busy &&
+           m_recv_buffer.empty() &&
+           now - m_idle_since.load() >= min_idle;
 }
 
 void HTTPServer::ClearConnectedClients()

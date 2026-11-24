@@ -46,6 +46,14 @@ inline constexpr int DEFAULT_HTTP_SERVER_TIMEOUT=30;
  */
 inline constexpr int DEFAULT_MAX_HTTP_CONNECTIONS = 16;
 
+/**
+ * When the server is at `-rpcmaxconnections` and a new connection is waiting,
+ * an idle keep-alive client is disconnected to make room for it. Only clients
+ * that have been idle for at least this long are considered, so that a client
+ * that is about to send its next request on the connection is not cut off.
+ */
+inline constexpr std::chrono::milliseconds HTTP_MIN_IDLE_FOR_EVICTION{500};
+
 enum class HTTPRequestMethod {
     UNKNOWN,
     GET,
@@ -376,6 +384,15 @@ private:
     std::atomic<size_t> m_connected_size{0};
 
     /**
+     * Whether the server is at -rpcmaxconnections and new connections are
+     * waiting to be accepted. While set, connections are closed after their
+     * current reply (see HTTPRequest::WriteReply()), to free slots for them.
+     * Updated by the I/O thread, read by worker threads through the
+     * HTTPRemoteClients.
+     */
+    std::atomic_bool m_connections_waiting{false};
+
+    /**
      * Info about which socket has which event ready and a reverse map
      * back to the HTTPRemoteClient that owns the socket.
      */
@@ -476,6 +493,31 @@ private:
     void SocketHandlerListening(const Sock::EventsPerSock& events_per_sock);
 
     /**
+     * Find the client that has been idle the longest among the clients that
+     * can be evicted to make room for a new connection.
+     * @see HTTPRemoteClient::IsEvictable()
+     * @param[in] now Current time.
+     * @return The client, or nullptr if no client can be evicted.
+     */
+    std::shared_ptr<HTTPRemoteClient> FindClientToEvict(MockableSteadyClock::time_point now) const;
+
+    /**
+     * Called when a connection is waiting to be accepted while the server is
+     * at `-rpcmaxconnections`. Flags the client that has been idle the longest
+     * for disconnection, if any, so that its slot is freed by DisconnectClients().
+     * @return true if a slot is about to be freed (by this eviction, or because
+     *         a client is already flagged for disconnection).
+     */
+    bool MakeRoomForConnection();
+
+    /**
+     * Update m_connections_waiting: set if the server is at the connection
+     * limit and a listening socket has a connection waiting to be accepted.
+     * Checks the listening sockets without waiting.
+     */
+    void UpdateConnectionsWaiting();
+
+    /**
      * Generate a collection of sockets to check for IO readiness.
      * @return Sockets to check for readiness plus an aux map to find the
      * corresponding HTTPRemoteClient given a socket.
@@ -502,8 +544,16 @@ std::optional<std::string> GetQueryParameterFromUri(std::string_view uri, std::s
 class HTTPRemoteClient
 {
 public:
-    explicit HTTPRemoteClient(HTTPServer::Id id, const CService& addr, std::unique_ptr<Sock> socket)
-        : m_id(id), m_addr(addr), m_origin(addr.ToStringAddrPort()), m_sock{std::move(socket)}, m_idle_since{MockableSteadyClock::now()} {}
+    /**
+     * @param[in] connections_waiting The server's flag telling whether new
+     *            connections are waiting for a free slot (see
+     *            HTTPServer::m_connections_waiting), or nullptr. Must outlive
+     *            this client's requests.
+     */
+    explicit HTTPRemoteClient(HTTPServer::Id id, const CService& addr, std::unique_ptr<Sock> socket,
+                              const std::atomic_bool* connections_waiting = nullptr)
+        : m_id(id), m_addr(addr), m_origin(addr.ToStringAddrPort()), m_sock{std::move(socket)}, m_idle_since{MockableSteadyClock::now()},
+          m_connections_waiting{connections_waiting} {}
 
     // Disable copies (should only be used as shared pointers)
     HTTPRemoteClient(const HTTPRemoteClient&) = delete;
@@ -520,6 +570,25 @@ public:
     void Receive() EXCLUSIVE_LOCKS_REQUIRED(!m_sock_mutex);
 
     bool ShouldDisconnect(MockableSteadyClock::time_point now, std::chrono::seconds rpcservertimeout, bool disconnect_all) const;
+
+    /**
+     * Whether this client can be disconnected to make room for a new
+     * connection when the server is at `-rpcmaxconnections`: a keep-alive
+     * client whose requests have all been answered, that has not started a new
+     * request since, and that has been idle for at least min_idle.
+     * Must be called from the I/O thread.
+     */
+    bool IsEvictable(MockableSteadyClock::time_point now, std::chrono::milliseconds min_idle) const;
+
+    //! Time of the last send or receive activity.
+    MockableSteadyClock::time_point GetIdleSince() const { return m_idle_since.load(); }
+
+    //! Flag this client for disconnection by the next DisconnectClients().
+    void FlagForDisconnect() { m_disconnect = true; }
+    bool IsFlaggedForDisconnect() const { return m_disconnect; }
+
+    //! Whether new connections are waiting for a free slot on the server.
+    bool ConnectionsWaiting() const { return m_connections_waiting && m_connections_waiting->load(); }
 
     /**
      * Try to read an HTTPRequest from a client's receive buffer.
@@ -641,6 +710,9 @@ private:
     //! Due to optimistic sends it may be updated in either a worker thread or in the
     //! I/O thread. It is checked in the I/O thread to disconnect idle clients.
     std::atomic<MockableSteadyClock::time_point> m_idle_since;
+
+    //! See ConnectionsWaiting(). Owned by the HTTPServer, may be nullptr.
+    const std::atomic_bool* const m_connections_waiting;
 };
 
 /** Initialize HTTP server.
