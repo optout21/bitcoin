@@ -670,21 +670,25 @@ class HTTPBasicsTest (BitcoinTestFramework):
                     conn = BitcoinHTTPConnection(self.node)
                     # Each client makes a unique request so it's easy to find in the log
                     conn.post('/', f'{{"method": "invalidrpc_{i}"}}', connection_header='keep-alive').read()
+                    # Start, but don't finish, a second request. The client is
+                    # then busy, so it can't be evicted to make room for a new
+                    # connection.
+                    conn.send_raw(b"GET /rest/")
                     connections.append(conn)
 
             # The next connection is over the limit, expect it to timeout
             with self.node.assert_debug_log(
                 expected_msgs = [],
-                unexpected_msgs = ["method=never_accepted"]
+                unexpected_msgs = ["method=never_accepted", "evicting idle client"]
             ):
                 conn = BitcoinHTTPConnection(self.node)
                 conn.set_timeout(5)
                 assert_raises(TimeoutError, lambda: conn.post('/', '{"method": "never_accepted"}', connection_header='keep-alive').read())
 
-            # All original clients are still connected
+            # No original client was disconnected (checked by the absence of
+            # the eviction message above, as sending another request to check
+            # the connection would mix with the unfinished one).
             assert_equal(len(connections), MAX_HTTP_CONNECTIONS)
-            for client in connections:
-                assert not client.sock_closed()
 
             # Try connecting again, but this time we'll wait for acceptance.
             # Because the send is blocking, we'll execute in a background thread.
@@ -712,9 +716,9 @@ class HTTPBasicsTest (BitcoinTestFramework):
                 client.close_sock()
 
     def check_connection_limit_idle_clients(self):
-        self.log.info("Check a connection over the limit while all slots are held by idle keep-alive clients")
+        self.log.info("Check that an idle keep-alive client is evicted to make room for a waiting connection")
         LIMIT = 4
-        # Disable the idle timeout, so that it can't free a slot.
+        # Disable the idle timeout, so that only an eviction can free a slot.
         self.restart_node(0, extra_args=["-rpcservertimeout=0", "-rest", f"-rpcmaxconnections={LIMIT}"])
         # Close the persistent HTTP connection to this node, see check_connection_limit().
         self.node._rpc = self.node.create_new_rpc_connection(mode="AUTHPROXY")
@@ -726,21 +730,27 @@ class HTTPBasicsTest (BitcoinTestFramework):
             # Keep-alive client: the connection stays open after the reply.
             assert GENESIS_HASH in conn.get('/rest/blockhashbyheight/0.json', connection_header='keep-alive').read().decode()
             connections.append(conn)
+            # Make the order in which the clients became idle unambiguous.
+            time.sleep(0.1)
 
-        # Let all clients be idle for a while.
+        # Let all clients be idle for long enough to be evicted
+        # (HTTP_MIN_IDLE_FOR_EVICTION is 250 ms).
         time.sleep(1)
 
-        # A new connection is over the limit. The idle clients keep their
-        # slots, so it is not accepted.
-        conn = BitcoinHTTPConnection(self.node)
-        conn.set_timeout(5)
-        assert_raises(TimeoutError, lambda: conn.get('/rest/blockhashbyheight/0.json').read())
+        # A new connection is over the limit. The client that has been idle the
+        # longest, the first one, is evicted to make room, and the new
+        # connection is served without waiting for -rpcservertimeout.
+        with self.node.assert_debug_log(expected_msgs=["evicting idle client"]):
+            conn = BitcoinHTTPConnection(self.node)
+            conn.set_timeout(5)
+            assert GENESIS_HASH in conn.get('/rest/blockhashbyheight/0.json').read().decode()
 
-        for client in connections:
+        assert connections[0].sock_closed()
+        for client in connections[1:]:
             assert not client.sock_closed()
 
         # Clean up
-        for client in connections + [conn]:
+        for client in connections[1:] + [conn]:
             client.close_sock()
 
 
