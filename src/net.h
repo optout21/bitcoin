@@ -245,6 +245,8 @@ public:
     DataStream m_recv;                   //!< received message data
     /// time of message receipt
     NodeClock::time_point m_time{NodeClock::epoch};
+    /// time the first byte of this message was read from the socket
+    NodeClock::time_point m_time_first_byte{NodeClock::epoch};
     uint32_t m_message_size{0};          //!< size of the payload
     uint32_t m_raw_message_size{0};      //!< used wire size of the message (including header/checksum)
     std::string m_type;
@@ -713,6 +715,8 @@ public:
     Mutex cs_vRecv;
 
     uint64_t nRecvBytes GUARDED_BY(cs_vRecv){0};
+    /** Time the first byte of the message currently being received was read, if any. */
+    std::optional<NodeClock::time_point> m_recv_msg_start GUARDED_BY(cs_vRecv);
 
     std::atomic<NodeClock::time_point> m_last_send{NodeClock::epoch};
     std::atomic<NodeClock::time_point> m_last_recv{NodeClock::epoch};

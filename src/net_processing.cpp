@@ -586,16 +586,16 @@ public:
     void BlockChecked(const std::shared_ptr<const CBlock>& block, const BlockValidationState& state) override
         EXCLUSIVE_LOCKS_REQUIRED(!m_peer_mutex);
     void NewPoWValidBlock(const CBlockIndex *pindex, const std::shared_ptr<const CBlock>& pblock) override
-        EXCLUSIVE_LOCKS_REQUIRED(!m_most_recent_block_mutex);
+        EXCLUSIVE_LOCKS_REQUIRED(!m_most_recent_block_mutex, !m_relay_timing_mutex);
 
     /** Implement NetEventsInterface */
     void InitializeNode(const CNode& node, ServiceFlags our_services) override EXCLUSIVE_LOCKS_REQUIRED(!m_peer_mutex, !m_tx_download_mutex);
     void FinalizeNode(const CNode& node) override EXCLUSIVE_LOCKS_REQUIRED(!m_peer_mutex, !m_headers_presync_mutex, !m_tx_download_mutex);
     bool HasAllDesirableServiceFlags(ServiceFlags services) const override;
     bool ProcessMessages(CNode& node, std::atomic<bool>& interrupt) override
-        EXCLUSIVE_LOCKS_REQUIRED(!m_peer_mutex, !m_most_recent_block_mutex, !m_headers_presync_mutex, g_msgproc_mutex, !m_tx_download_mutex, !m_inv_to_send_mutex);
+        EXCLUSIVE_LOCKS_REQUIRED(!m_peer_mutex, !m_most_recent_block_mutex, !m_headers_presync_mutex, g_msgproc_mutex, !m_tx_download_mutex, !m_inv_to_send_mutex, !m_relay_timing_mutex);
     bool SendMessages(CNode& node) override
-        EXCLUSIVE_LOCKS_REQUIRED(!m_peer_mutex, !m_most_recent_block_mutex, g_msgproc_mutex, !m_tx_download_mutex, !m_inv_to_send_mutex);
+        EXCLUSIVE_LOCKS_REQUIRED(!m_peer_mutex, !m_most_recent_block_mutex, g_msgproc_mutex, !m_tx_download_mutex, !m_inv_to_send_mutex, !m_relay_timing_mutex);
 
     /** Implement PeerManager */
     void StartScheduledTasks(CScheduler& scheduler) override;
@@ -621,8 +621,8 @@ public:
 
 private:
     void ProcessMessage(Peer& peer, CNode& pfrom, const std::string& msg_type, DataStream& vRecv, NodeClock::time_point time_received,
-                        const std::atomic<bool>& interruptMsgProc)
-        EXCLUSIVE_LOCKS_REQUIRED(!m_peer_mutex, !m_most_recent_block_mutex, !m_headers_presync_mutex, g_msgproc_mutex, !m_tx_download_mutex, !m_inv_to_send_mutex);
+                        NodeClock::time_point time_first_byte, const std::atomic<bool>& interruptMsgProc)
+        EXCLUSIVE_LOCKS_REQUIRED(!m_peer_mutex, !m_most_recent_block_mutex, !m_headers_presync_mutex, g_msgproc_mutex, !m_tx_download_mutex, !m_inv_to_send_mutex, !m_relay_timing_mutex);
 
     /** Consider evicting an outbound peer based on the amount of time they've been behind our tip */
     void ConsiderEviction(CNode& pto, Peer& peer, std::chrono::seconds time_in_seconds) EXCLUSIVE_LOCKS_REQUIRED(cs_main, g_msgproc_mutex);
@@ -952,6 +952,102 @@ private:
     uint256 m_most_recent_block_hash GUARDED_BY(m_most_recent_block_mutex);
     std::unique_ptr<const std::map<GenTxid, CTransactionRef>> m_most_recent_block_txs GUARDED_BY(m_most_recent_block_mutex);
 
+    /** Per-hop block relay timing (measurement only).
+     *
+     * A record is created when we first hear about a new block from any peer (CMPCTBLOCK,
+     * HEADERS or INV) and is logged when we first announce the block after validation
+     * (HEADERS, INV, or CMPCTBLOCK to a peer that missed the fast announcement).
+     * Records that are never announced are logged when evicted from the cache, if the block
+     * got at least PoW-valid; otherwise they are dropped silently. */
+    struct BlockRelayTiming {
+        NodeClock::time_point start;      //!< first byte of the first message announcing the block
+        const char* start_kind{""};       //!< "cmpct", "headers" or "inv"
+        NodeId start_peer{-1};
+        // First CMPCTBLOCK received for this block (unsolicited or in response to our GETDATA)
+        std::optional<NodeClock::time_point> cmpct_rx_first, cmpct_rx_last;
+        NodeId cmpct_peer{-1};
+        bool cmpct_hb_peer{false};        //!< sender was one of our high-bandwidth peers
+        size_t prefilled{0};
+        std::optional<NodeClock::time_point> reconstructed;
+        bool roundtrip{false};            //!< reconstruction needed GETBLOCKTXN
+        // Fast (high-bandwidth) announcement, before full validation
+        std::optional<NodeClock::time_point> pow_valid, hb_send;
+        int hb_sent{0};
+        // Full validation and the first announcement after it
+        std::optional<NodeClock::time_point> validated, lb_send;
+        const char* lb_kind{""};
+        /** Already logged; kept in the cache so late messages about the block don't start a new record. */
+        bool logged{false};
+    };
+    static constexpr size_t MAX_BLOCK_RELAY_TIMINGS{8};
+    Mutex m_relay_timing_mutex;
+    std::deque<std::pair<uint256, BlockRelayTiming>> m_relay_timings GUARDED_BY(m_relay_timing_mutex);
+
+    BlockRelayTiming* FindRelayTiming(const uint256& hash) EXCLUSIVE_LOCKS_REQUIRED(m_relay_timing_mutex)
+    {
+        for (auto& [h, t] : m_relay_timings) if (h == hash) return &t;
+        return nullptr;
+    }
+    void LogRelayTiming(const uint256& hash, const BlockRelayTiming& t) EXCLUSIVE_LOCKS_REQUIRED(m_relay_timing_mutex)
+    {
+        auto off = [&](const std::optional<NodeClock::time_point>& tp) -> int64_t {
+            return tp ? Ticks<std::chrono::microseconds>(*tp - t.start) : -1;
+        };
+        LogDebug(BCLog::CMPCTBLOCK,
+                 "block relay timing %s: start=%s peer=%d | cmpct peer=%d hb=%d prefilled=%u roundtrip=%d | "
+                 "us since start: cmpct_first=%d cmpct_last=%d reconstructed=%d pow_valid=%d hb_send=%d (to %d) "
+                 "validated=%d lb_send=%d (%s)",
+                 hash.ToString(), t.start_kind, t.start_peer,
+                 t.cmpct_peer, t.cmpct_hb_peer, t.prefilled, t.roundtrip,
+                 off(t.cmpct_rx_first), off(t.cmpct_rx_last), off(t.reconstructed), off(t.pow_valid),
+                 off(t.hb_send), t.hb_sent, off(t.validated), off(t.lb_send), t.lb_kind);
+    }
+    /** Find the record for a block, creating it if this is the first we hear of the block. */
+    BlockRelayTiming& GetOrCreateRelayTiming(const uint256& hash, NodeClock::time_point start, const char* kind, NodeId peer)
+        EXCLUSIVE_LOCKS_REQUIRED(m_relay_timing_mutex)
+    {
+        if (auto* t{FindRelayTiming(hash)}) return *t;
+        if (m_relay_timings.size() >= MAX_BLOCK_RELAY_TIMINGS) {
+            const auto& [h, old]{m_relay_timings.front()};
+            if (old.pow_valid && !old.logged) LogRelayTiming(h, old);
+            m_relay_timings.pop_front();
+        }
+        auto& t{m_relay_timings.emplace_back(hash, BlockRelayTiming{}).second};
+        t.start = start;
+        t.start_kind = kind;
+        t.start_peer = peer;
+        return t;
+    }
+    void RecordBlockAnnouncementReceived(const uint256& hash, NodeClock::time_point start, const char* kind, NodeId peer) EXCLUSIVE_LOCKS_REQUIRED(!m_relay_timing_mutex)
+    {
+        LOCK(m_relay_timing_mutex);
+        GetOrCreateRelayTiming(hash, start, kind, peer);
+    }
+    void MarkBlockReconstructed(const uint256& hash, bool roundtrip) EXCLUSIVE_LOCKS_REQUIRED(!m_relay_timing_mutex)
+    {
+        LOCK(m_relay_timing_mutex);
+        if (auto* t{FindRelayTiming(hash)}; t && !t->reconstructed) {
+            t->reconstructed = NodeClock::now();
+            t->roundtrip = roundtrip;
+        }
+    }
+    void MarkBlockValidated(const uint256& hash) EXCLUSIVE_LOCKS_REQUIRED(!m_relay_timing_mutex)
+    {
+        LOCK(m_relay_timing_mutex);
+        if (auto* t{FindRelayTiming(hash)}; t && !t->validated) t->validated = NodeClock::now();
+    }
+    /** We announced a block after validation (not the high-bandwidth fast announcement). */
+    void MarkBlockAnnounced(const uint256& hash, const char* kind) EXCLUSIVE_LOCKS_REQUIRED(!m_relay_timing_mutex)
+    {
+        LOCK(m_relay_timing_mutex);
+        auto* t{FindRelayTiming(hash)};
+        if (!t || t->logged) return;
+        t->lb_send = NodeClock::now();
+        t->lb_kind = kind;
+        LogRelayTiming(hash, *t);
+        t->logged = true;
+    }
+
     // Data about the low-work headers synchronization, aggregated from all peers' HeadersSyncStates.
     /** Mutex guarding the other m_headers_presync_* variables. */
     Mutex m_headers_presync_mutex;
@@ -1049,11 +1145,12 @@ private:
         LOCKS_EXCLUDED(::cs_main);
 
     /** Process a new block. Perform any post-processing housekeeping */
-    void ProcessBlock(CNode& node, const std::shared_ptr<const CBlock>& block, bool force_processing, bool min_pow_checked);
+    void ProcessBlock(CNode& node, const std::shared_ptr<const CBlock>& block, bool force_processing, bool min_pow_checked)
+        EXCLUSIVE_LOCKS_REQUIRED(!m_relay_timing_mutex);
 
     /** Process compact block txns  */
     void ProcessCompactBlockTxns(CNode& pfrom, Peer& peer, const BlockTransactions& block_transactions)
-        EXCLUSIVE_LOCKS_REQUIRED(g_msgproc_mutex, !m_most_recent_block_mutex);
+        EXCLUSIVE_LOCKS_REQUIRED(g_msgproc_mutex, !m_most_recent_block_mutex, !m_relay_timing_mutex);
 
     /**
      * Schedule an INV for a transaction to be sent to the given peer (via `PushMessage()`).
@@ -2230,6 +2327,11 @@ void PeerManagerImpl::BlockDisconnected(const std::shared_ptr<const CBlock> &blo
  */
 void PeerManagerImpl::NewPoWValidBlock(const CBlockIndex *pindex, const std::shared_ptr<const CBlock>& pblock)
 {
+    {
+        LOCK(m_relay_timing_mutex);
+        if (auto* t{FindRelayTiming(pindex->GetBlockHash())}; t && !t->pow_valid) t->pow_valid = NodeClock::now();
+    }
+
     auto pcmpctblock = std::make_shared<const CBlockHeaderAndShortTxIDs>(*pblock, FastRandomContext().rand64());
 
     LOCK(cs_main);
@@ -2258,7 +2360,9 @@ void PeerManagerImpl::NewPoWValidBlock(const CBlockIndex *pindex, const std::sha
         m_most_recent_block_txs = std::move(most_recent_block_txs);
     }
 
-    m_connman.ForEachNode([this, pindex, &lazy_ser, &hashBlock](CNode* pnode) EXCLUSIVE_LOCKS_REQUIRED(::cs_main) {
+    std::optional<NodeClock::time_point> hb_send;
+    int hb_sent{0};
+    m_connman.ForEachNode([this, pindex, &lazy_ser, &hashBlock, &hb_send, &hb_sent](CNode* pnode) EXCLUSIVE_LOCKS_REQUIRED(::cs_main) {
         AssertLockHeld(::cs_main);
 
         if (pnode->GetCommonVersion() < INVALID_CB_NO_BAN_VERSION || pnode->fDisconnect)
@@ -2275,8 +2379,16 @@ void PeerManagerImpl::NewPoWValidBlock(const CBlockIndex *pindex, const std::sha
             const CSerializedNetMsg& ser_cmpctblock{lazy_ser.get()};
             PushMessage(*pnode, ser_cmpctblock.Copy());
             state.pindexBestHeaderSent = pindex;
+            if (!hb_send) hb_send = NodeClock::now();
+            ++hb_sent;
         }
     });
+
+    LOCK(m_relay_timing_mutex);
+    if (auto* t{FindRelayTiming(hashBlock)}; t && !t->hb_send) {
+        t->hb_send = hb_send;
+        t->hb_sent = hb_sent;
+    }
 }
 
 /**
@@ -3681,6 +3793,7 @@ void PeerManagerImpl::ProcessBlock(CNode& node, const std::shared_ptr<const CBlo
 {
     bool new_block{false};
     m_chainman.ProcessNewBlock(block, force_processing, min_pow_checked, &new_block);
+    if (new_block) MarkBlockValidated(block->GetHash());
     if (new_block) {
         node.m_last_block_time = GetTime<std::chrono::seconds>();
         // In case this block came from a different peer than we requested
@@ -3758,6 +3871,7 @@ void PeerManagerImpl::ProcessCompactBlockTxns(CNode& pfrom, Peer& peer, const Bl
             }
         } else {
             // Block is okay for further processing
+            MarkBlockReconstructed(block_transactions.blockhash, /*roundtrip=*/!block_transactions.txn.empty());
             RemoveBlockRequest(block_transactions.blockhash, pfrom.GetId()); // it is now an empty pointer
             fBlockRead = true;
             // mapBlockSource is used for potentially punishing peers and
@@ -3827,6 +3941,7 @@ void PeerManagerImpl::PushPrivateBroadcastTx(CNode& node)
 
 void PeerManagerImpl::ProcessMessage(Peer& peer, CNode& pfrom, const std::string& msg_type, DataStream& vRecv,
                                      const NodeClock::time_point time_received,
+                                     const NodeClock::time_point time_first_byte,
                                      const std::atomic<bool>& interruptMsgProc)
 {
     AssertLockHeld(g_msgproc_mutex);
@@ -4385,6 +4500,9 @@ void PeerManagerImpl::ProcessMessage(Peer& peer, CNode& pfrom, const std::string
                     // provided should be the highest, so send a getheaders and
                     // then fetch the blocks we need to catch up.
                     best_block = &inv.hash;
+                    if (!m_chainman.IsInitialBlockDownload()) {
+                        RecordBlockAnnouncementReceived(inv.hash, time_first_byte, "inv", pfrom.GetId());
+                    }
                 }
             } else if (inv.IsGenTxMsg()) {
                 if (reject_tx_invs) {
@@ -4806,6 +4924,18 @@ void PeerManagerImpl::ProcessMessage(Peer& peer, CNode& pfrom, const std::string
         const auto blockhash = cmpctblock.header.GetHash();
 
         {
+            LOCK(m_relay_timing_mutex);
+            auto& t{GetOrCreateRelayTiming(blockhash, time_first_byte, "cmpct", pfrom.GetId())};
+            if (!t.cmpct_rx_first) {
+                t.cmpct_rx_first = time_first_byte;
+                t.cmpct_rx_last = time_received;
+                t.cmpct_peer = pfrom.GetId();
+                t.cmpct_hb_peer = pfrom.m_bip152_highbandwidth_from;
+                t.prefilled = cmpctblock.PrefilledTxCount();
+            }
+        }
+
+        {
         LOCK(cs_main);
 
         const CBlockIndex* prev_block = m_chainman.m_blockman.LookupBlockIndex(cmpctblock.header.hashPrevBlock);
@@ -4984,6 +5114,7 @@ void PeerManagerImpl::ProcessMessage(Peer& peer, CNode& pfrom, const std::string
                                              /*segwit_active=*/DeploymentActiveAfter(prev_block, m_chainman, Consensus::DEPLOYMENT_SEGWIT));
                 if (status == READ_STATUS_OK) {
                     fBlockReconstructed = true;
+                    MarkBlockReconstructed(blockhash, /*roundtrip=*/false);
                 }
             }
         } else {
@@ -5081,7 +5212,29 @@ void PeerManagerImpl::ProcessMessage(Peer& peer, CNode& pfrom, const std::string
             ReadCompactSize(vRecv); // ignore tx count; assume it is 0.
         }
 
+        // Relay timing: remember headers we did not know yet (only small, announcement-sized messages)
+        std::vector<uint256> new_hashes;
+        if (nCount <= MAX_BLOCKS_TO_ANNOUNCE) {
+            LOCK(cs_main);
+            if (!m_chainman.IsInitialBlockDownload()) {
+                for (const auto& header : headers) {
+                    const auto hash{header.GetHash()};
+                    if (!m_chainman.m_blockman.LookupBlockIndex(hash)) new_hashes.push_back(hash);
+                }
+            }
+        }
+
         ProcessHeadersMessage(pfrom, peer, std::move(headers), /*via_compact_block=*/false);
+
+        if (!new_hashes.empty()) {
+            LOCK(cs_main);
+            for (const auto& hash : new_hashes) {
+                // Only headers that were accepted
+                if (m_chainman.m_blockman.LookupBlockIndex(hash)) {
+                    RecordBlockAnnouncementReceived(hash, time_first_byte, "headers", pfrom.GetId());
+                }
+            }
+        }
 
         // Check if the headers presync progress needs to be reported to validation.
         // This needs to be done without holding the m_headers_presync_mutex lock.
@@ -5475,7 +5628,7 @@ bool PeerManagerImpl::ProcessMessages(CNode& node, std::atomic<bool>& interruptM
     }
 
     try {
-        ProcessMessage(peer, node, msg.m_type, msg.m_recv, msg.m_time, interruptMsgProc);
+        ProcessMessage(peer, node, msg.m_type, msg.m_recv, msg.m_time, msg.m_time_first_byte, interruptMsgProc);
         if (interruptMsgProc) return false;
         {
             LOCK(peer.m_getdata_requests_mutex);
@@ -6250,6 +6403,7 @@ bool PeerManagerImpl::SendMessages(CNode& node)
                         MakeAndPushMessage(node, NetMsgType::CMPCTBLOCK, cmpctblock);
                     }
                     state.pindexBestHeaderSent = pBestIndex;
+                    MarkBlockAnnounced(pBestIndex->GetBlockHash(), "cmpct");
                 } else if (peer.m_prefers_headers) {
                     if (vHeaders.size() > 1) {
                         LogDebug(BCLog::NET, "%s: %u headers, range (%s, %s), to peer=%d\n", __func__,
@@ -6262,6 +6416,7 @@ bool PeerManagerImpl::SendMessages(CNode& node)
                     }
                     MakeAndPushMessage(node, NetMsgType::HEADERS, TX_WITH_WITNESS(vHeaders));
                     state.pindexBestHeaderSent = pBestIndex;
+                    for (const auto& header : vHeaders) MarkBlockAnnounced(header.GetHash(), "headers");
                 } else
                     fRevertToInv = true;
             }
@@ -6304,6 +6459,7 @@ bool PeerManagerImpl::SendMessages(CNode& node)
             // Add blocks
             for (const uint256& hash : peer.m_blocks_for_inv_relay) {
                 vInv.emplace_back(MSG_BLOCK, hash);
+                MarkBlockAnnounced(hash, "inv"); // queued here, pushed at the end of SendMessages
                 if (vInv.size() == MAX_INV_SZ) {
                     MakeAndPushMessage(node, NetMsgType::INV, vInv);
                     vInv.clear();

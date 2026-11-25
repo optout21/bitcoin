@@ -690,6 +690,7 @@ bool CNode::ReceiveMsgBytes(std::span<const uint8_t> msg_bytes, bool& complete)
     m_last_recv = time;
     nRecvBytes += msg_bytes.size();
     while (msg_bytes.size() > 0) {
+        if (!m_recv_msg_start) m_recv_msg_start = time;
         // absorb network data
         if (!m_transport->ReceivedBytes(msg_bytes)) {
             // Serious transport problem, disconnect from the peer.
@@ -700,6 +701,8 @@ bool CNode::ReceiveMsgBytes(std::span<const uint8_t> msg_bytes, bool& complete)
             // decompose a transport agnostic CNetMessage from the deserializer
             bool reject_message{false};
             CNetMessage msg = m_transport->GetReceivedMessage(time, reject_message);
+            msg.m_time_first_byte = *m_recv_msg_start;
+            m_recv_msg_start.reset();
             if (reject_message) {
                 // Message deserialization failed. Drop the message but don't disconnect the peer.
                 // store the size of the corrupt message
