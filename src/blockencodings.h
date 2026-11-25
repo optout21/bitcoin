@@ -117,6 +117,7 @@ public:
     uint64_t GetShortID(const Wtxid& wtxid) const;
 
     size_t BlockTxCount() const { return shorttxids.size() + prefilledtxn.size(); }
+    size_t PrefilledTxCount() const { return prefilledtxn.size(); }
 
     SERIALIZE_METHODS(CBlockHeaderAndShortTxIDs, obj)
     {
