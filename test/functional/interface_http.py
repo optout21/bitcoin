@@ -163,6 +163,8 @@ class HTTPBasicsTest (BitcoinTestFramework):
         self.check_invalid_http_version()
         self.check_whitespace_in_headers()
         self.check_connection_limit()
+        self.check_connection_limit_idle_clients()
+        self.check_connection_limit_close_on_reply()
         self.check_pipelined_data_is_throttled()
         self.check_slow_read_throttle()
 
@@ -669,21 +671,25 @@ class HTTPBasicsTest (BitcoinTestFramework):
                     conn = BitcoinHTTPConnection(self.node)
                     # Each client makes a unique request so it's easy to find in the log
                     conn.post('/', f'{{"method": "invalidrpc_{i}"}}', connection_header='keep-alive').read()
+                    # Start, but don't finish, a second request. The client is
+                    # then busy, so it can't be evicted to make room for a new
+                    # connection.
+                    conn.send_raw(b"GET /rest/")
                     connections.append(conn)
 
             # The next connection is over the limit, expect it to timeout
             with self.node.assert_debug_log(
                 expected_msgs = [],
-                unexpected_msgs = ["method=never_accepted"]
+                unexpected_msgs = ["method=never_accepted", "evicting idle client"]
             ):
                 conn = BitcoinHTTPConnection(self.node)
                 conn.set_timeout(5)
                 assert_raises(TimeoutError, lambda: conn.post('/', '{"method": "never_accepted"}', connection_header='keep-alive').read())
 
-            # All original clients are still connected
+            # No original client was disconnected (checked by the absence of
+            # the eviction message above, as sending another request to check
+            # the connection would mix with the unfinished one).
             assert_equal(len(connections), MAX_HTTP_CONNECTIONS)
-            for client in connections:
-                assert not client.sock_closed()
 
             # Try connecting again, but this time we'll wait for acceptance.
             # Because the send is blocking, we'll execute in a background thread.
@@ -710,6 +716,87 @@ class HTTPBasicsTest (BitcoinTestFramework):
             for client in connections:
                 client.close_sock()
 
+    def check_connection_limit_idle_clients(self):
+        self.log.info("Check that an idle keep-alive client is evicted to make room for a waiting connection")
+        LIMIT = 4
+        # Disable the idle timeout, so that only an eviction can free a slot.
+        self.restart_node(0, extra_args=["-rpcservertimeout=0", "-rest", f"-rpcmaxconnections={LIMIT}"])
+        # Close the persistent HTTP connection to this node, see check_connection_limit().
+        self.node._rpc = self.node.create_new_rpc_connection(mode="AUTHPROXY")
+
+        GENESIS_HASH = "0f9188f13cb7b2c71f2a335e3a4fc328bf5beb436012afca590b1a11466e2206"
+        connections = []
+        for _ in range(LIMIT):
+            conn = BitcoinHTTPConnection(self.node)
+            # Keep-alive client: the connection stays open after the reply.
+            assert GENESIS_HASH in conn.get('/rest/blockhashbyheight/0.json', connection_header='keep-alive').read().decode()
+            connections.append(conn)
+            # Make the order in which the clients became idle unambiguous.
+            time.sleep(0.1)
+
+        # Let all clients be idle for long enough to be evicted
+        # (HTTP_MIN_IDLE_FOR_EVICTION is 500 ms).
+        time.sleep(1)
+
+        # A new connection is over the limit. The client that has been idle the
+        # longest, the first one, is evicted to make room, and the new
+        # connection is served without waiting for -rpcservertimeout.
+        with self.node.assert_debug_log(expected_msgs=["evicting idle client"]):
+            conn = BitcoinHTTPConnection(self.node)
+            conn.set_timeout(5)
+            assert GENESIS_HASH in conn.get('/rest/blockhashbyheight/0.json').read().decode()
+
+        assert connections[0].sock_closed()
+        for client in connections[1:]:
+            assert not client.sock_closed()
+
+        # Clean up
+        for client in connections[1:] + [conn]:
+            client.close_sock()
+
+
+    def check_connection_limit_close_on_reply(self):
+        self.log.info("Check that a connection is closed after its reply while other connections are waiting")
+        LIMIT = 4
+        # Disable the idle timeout, so that it can't free a slot.
+        self.restart_node(0, extra_args=["-rpcservertimeout=0", "-rest", f"-rpcmaxconnections={LIMIT}"])
+        # Close the persistent HTTP connection to this node, see check_connection_limit().
+        self.node._rpc = self.node.create_new_rpc_connection(mode="AUTHPROXY")
+
+        GENESIS_HASH = "0f9188f13cb7b2c71f2a335e3a4fc328bf5beb436012afca590b1a11466e2206"
+        # Fill all slots with busy clients: each one starts, but doesn't
+        # finish, a request. Busy clients can't be evicted.
+        connections = []
+        for _ in range(LIMIT):
+            conn = BitcoinHTTPConnection(self.node)
+            conn.send_raw(b"GET /rest/blockhashbyheight/0.json HTTP/1.1\r\nHost: localhost\r\n")
+            connections.append(conn)
+
+        # A new connection is over the limit and waits. Because the send is
+        # blocking, execute it in a background thread.
+        waiting = BitcoinHTTPConnection(self.node)
+        executor = concurrent.futures.ThreadPoolExecutor(max_workers=1)
+        waiting_request = executor.submit(lambda: waiting.get('/rest/blockhashbyheight/0.json').read())
+        time.sleep(1)
+        assert not waiting_request.done()
+
+        # One of the busy clients finishes its request. As a connection is
+        # waiting, its reply tells it that the connection will be closed, and
+        # the server closes it once the reply has been sent.
+        with self.node.assert_debug_log(expected_msgs=["after the reply, as connections are waiting"]):
+            connections[0].send_raw(b"\r\n")
+            reply = b""
+            while chunk := connections[0].recv_raw():
+                reply += chunk
+        assert b"Connection: close" in reply
+        assert GENESIS_HASH.encode() in reply
+
+        # The freed slot is used by the waiting connection.
+        assert GENESIS_HASH in waiting_request.result(timeout=5).decode()
+
+        # Clean up
+        for client in connections[1:] + [waiting]:
+            client.close_sock()
 
     def check_pipelined_data_is_throttled(self):
         self.log.info("Check that pipelined data is throttled while a request is in flight")
